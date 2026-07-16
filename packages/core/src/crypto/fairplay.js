@@ -10,12 +10,10 @@
 //                        server → 32 bytes    12-byte FPLY reply header ‖ the
 //                                              request's final 20 bytes
 //
-// The wire framing, phase detection and header validation are fully open and
-// implemented here. The reply *material* — the four 142-byte phase-1 replies
-// and the phase-2 key-derivation cipher — is the reverse-engineered part that
-// the community `playfair` project publishes. Rather than bake questionable
-// constants in, this module takes an injectable `provider`, so a verified
-// playfair table set can be supplied without changing any protocol logic.
+// The wire framing, phase detection and header validation live here. The
+// reverse-engineered key material is isolated behind an injectable provider;
+// production uses the vendored, GPL PlayFair WebAssembly provider while tests
+// and alternate implementations can supply the same small interface.
 //
 // A provider implements:
 //   phase1(mode: number, request: Buffer): Buffer   // 142-byte reply

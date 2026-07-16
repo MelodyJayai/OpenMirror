@@ -15,6 +15,7 @@
     "./rtsp-server": "./src/rtsp/server.js",
     "./pairing": "./src/crypto/pairing.js",
     "./fairplay": "./src/crypto/fairplay.js",
+    "./playfair-provider": "./src/crypto/playfair-provider.js",
     "./stream-crypto": "./src/crypto/stream.js",
     "./mirror-stream": "./src/stream/mirror.js",
     "./h264": "./src/stream/h264.js",

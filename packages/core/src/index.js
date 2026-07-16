@@ -10,7 +10,8 @@ import { RtspServer } from './rtsp/server.js';
 import { encodeBplist, decodeBplist } from './plist/bplist.js';
 import { DeviceIdentity, PairingSession } from './crypto/pairing.js';
 import { MirrorTransport } from './stream/mirror.js';
-import { FairPlaySession, createStubFairPlayProvider } from './crypto/fairplay.js';
+import { FairPlaySession } from './crypto/fairplay.js';
+import { createPlayFairProvider } from './crypto/playfair-provider.js';
 import { MirrorStreamDecryptor, AudioPacketDecryptor } from './crypto/stream.js';
 import { H264StreamProcessor, MIRROR_PAYLOAD } from './stream/h264.js';
 import { AUDIO_PAYLOAD, RtpSequencer } from './stream/rtp.js';
@@ -28,6 +29,7 @@ export {
   FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH,
   FP_REPLY2_LENGTH, FP_SETUP2_REPLY_HEADER,
 } from './crypto/fairplay.js';
+export { createPlayFairProvider, PLAYFAIR_ENCRYPTED_KEY_BYTES } from './crypto/playfair-provider.js';
 export {
   MirrorStreamDecryptor, AudioPacketDecryptor, deriveMirrorStreamKey, unsignedConnectionId,
 } from './crypto/stream.js';
@@ -57,10 +59,9 @@ export class AirPlayReceiver extends EventEmitter {
       features: options.features ?? DEFAULT_FEATURES,
       hostname: options.hostname,
     };
-    // Inject a verified playfair provider for real-device interoperability.
-    // The default provider implements only the public wire shape and cannot
-    // derive a usable media key.
-    this.#fairPlayProvider = options.fairPlayProvider ?? createStubFairPlayProvider();
+    // Tests and alternate implementations can inject a compatible provider;
+    // production defaults to the vendored, sandboxed PlayFair implementation.
+    this.#fairPlayProvider = options.fairPlayProvider ?? createPlayFairProvider();
     this.#identity = new DeviceIdentity({ privateKeySeed: options.privateKeySeed });
     this.#responder = new MdnsResponder({ hostname: this.#options.hostname });
     this.#rtsp = new RtspServer();

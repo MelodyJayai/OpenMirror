@@ -10,6 +10,7 @@
     "apps/*"
   ],
   "scripts": {
+    "build:playfair": "node tools/build-playfair-wasm.js",
     "test": "node --test \"packages/core/test/*.test.js\" \"packages/media/test/*.test.js\"",
     "start": "node apps/cli/src/main.js"
   },
