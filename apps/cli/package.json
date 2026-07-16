@@ -1,0 +1,16 @@
+{
+  "name": "@openmirror/cli",
+  "version": "0.1.0",
+  "description": "OpenMirror command-line receiver for protocol development and testing",
+  "license": "GPL-3.0",
+  "type": "module",
+  "bin": {
+    "openmirror": "src/main.js"
+  },
+  "dependencies": {
+    "@openmirror/core": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

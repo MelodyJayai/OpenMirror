@@ -1,0 +1,21 @@
+{
+  "name": "@openmirror/core",
+  "version": "0.1.0",
+  "description": "Protocol core for OpenMirror: mDNS discovery, RTSP control, binary plist, AirPlay pairing",
+  "license": "GPL-3.0",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./dns": "./src/discovery/dns.js",
+    "./responder": "./src/discovery/responder.js",
+    "./airplay-service": "./src/discovery/airplay.js",
+    "./bplist": "./src/plist/bplist.js",
+    "./rtsp-parser": "./src/rtsp/parser.js",
+    "./rtsp-server": "./src/rtsp/server.js",
+    "./pairing": "./src/crypto/pairing.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

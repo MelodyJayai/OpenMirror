@@ -1,0 +1,19 @@
+{
+  "name": "openmirror",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Open-source cross-platform wireless screen mirroring receiver (AirPlay / Google Cast)",
+  "license": "GPL-3.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "node --test \"packages/core/test/*.test.js\"",
+    "start": "node apps/cli/src/main.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
