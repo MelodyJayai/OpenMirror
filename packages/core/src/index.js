@@ -1,6 +1,7 @@
 // OpenMirror protocol core: wires together mDNS discovery, the RTSP control
 // server, binary plist payloads and legacy pairing into an AirPlayReceiver.
-// Media stream handling (video/audio/FairPlay) lands in later milestones.
+// Decoder-ready media events are emitted for the separate @openmirror/media
+// package and future desktop frontends.
 
 import { EventEmitter } from 'node:events';
 import { MdnsResponder } from './discovery/responder.js';
@@ -12,7 +13,7 @@ import { MirrorTransport } from './stream/mirror.js';
 import { FairPlaySession, createStubFairPlayProvider } from './crypto/fairplay.js';
 import { MirrorStreamDecryptor, AudioPacketDecryptor } from './crypto/stream.js';
 import { H264StreamProcessor, MIRROR_PAYLOAD } from './stream/h264.js';
-import { AUDIO_PAYLOAD } from './stream/rtp.js';
+import { AUDIO_PAYLOAD, RtpSequencer } from './stream/rtp.js';
 
 export { MdnsResponder, localIPv4Addresses } from './discovery/responder.js';
 export * as dns from './discovery/dns.js';
@@ -24,6 +25,8 @@ export { DeviceIdentity, PairingSession } from './crypto/pairing.js';
 export { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from './stream/mirror.js';
 export {
   FairPlaySession, createStubFairPlayProvider, classifyFpSetup, isFairPlayMessage,
+  FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH,
+  FP_REPLY2_LENGTH, FP_SETUP2_REPLY_HEADER,
 } from './crypto/fairplay.js';
 export {
   MirrorStreamDecryptor, AudioPacketDecryptor, deriveMirrorStreamKey, unsignedConnectionId,
@@ -278,6 +281,16 @@ export class AirPlayReceiver extends EventEmitter {
       onCodec: (codec) => this.emit('video-codec', { ...codec, session }),
       onVideo: (unit) => this.emit('video-data', { ...unit, session }),
     });
+    const audioSequencer = new RtpSequencer((packet) => {
+      const decryptor = session.state.audio?.decryptor;
+      const payload = decryptor ? decryptor.decrypt(packet.payload) : packet.payload;
+      this.emit('audio-data', {
+        ...packet,
+        payload,
+        encrypted: !decryptor,
+        session,
+      });
+    });
 
     transport.on('video-frame', (frame) => {
       const payload = frame.type === MIRROR_PAYLOAD.VIDEO && session.state.videoDecryptor
@@ -296,14 +309,7 @@ export class AirPlayReceiver extends EventEmitter {
         this.emit('audio-packet', { ...packet, session });
         return;
       }
-      const decryptor = session.state.audio?.decryptor;
-      const payload = decryptor ? decryptor.decrypt(packet.payload) : packet.payload;
-      this.emit('audio-data', {
-        ...packet,
-        payload,
-        encrypted: !decryptor,
-        session,
-      });
+      audioSequencer.push(packet);
     });
     transport.on('invalid-audio-packet', (packet) => {
       this.emit('stream-error', { ...packet, type: 'audio-rtp', session });

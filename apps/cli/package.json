@@ -8,7 +8,8 @@
     "openmirror": "src/main.js"
   },
   "dependencies": {
-    "@openmirror/core": "*"
+    "@openmirror/core": "*",
+    "@openmirror/media": "*"
   },
   "engines": {
     "node": ">=20"

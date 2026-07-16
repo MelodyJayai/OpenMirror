@@ -13,7 +13,8 @@ import { RtspParser } from '../src/rtsp/parser.js';
 import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
 import { rawEd25519PublicKey, x25519PublicFromRaw, ed25519PublicFromRaw } from '../src/crypto/pairing.js';
 import {
-  FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH, FP_REPLY2_LENGTH,
+  FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH,
+  FP_REPLY2_LENGTH, FP_SETUP2_REPLY_HEADER,
 } from '../src/crypto/fairplay.js';
 
 function connect(port) {
@@ -127,6 +128,8 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     const fp2 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 6', fp2Body);
     assert.equal(fp2.status, 200);
     assert.equal(fp2.body.length, FP_REPLY2_LENGTH);
+    assert.deepEqual(fp2.body.subarray(0, 12), FP_SETUP2_REPLY_HEADER);
+    assert.deepEqual(fp2.body.subarray(12), fp2Body.subarray(144));
   } finally {
     client.end();
     await receiver.stop();
@@ -180,13 +183,38 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     const rtpHeader = Buffer.alloc(12);
     rtpHeader[0] = 0x80;
     rtpHeader[1] = 96;
-    rtpHeader.writeUInt16BE(7, 2);
+    rtpHeader.writeUInt16BE(10, 2);
     const audioPayload = Buffer.from([4, 5, 6]);
     audio.send(Buffer.concat([rtpHeader, audioPayload]), response.streams[1].dataPort, '127.0.0.1');
     const audioPacket = await audioReceived;
-    assert.equal(audioPacket.sequence, 7);
+    assert.equal(audioPacket.sequence, 10);
     assert.equal(audioPacket.encrypted, true);
     assert.deepEqual(audioPacket.payload, audioPayload);
+
+    const reordered = [];
+    const reorderedPackets = new Promise((resolve) => {
+      const onAudio = ({ sequence }) => {
+        if (sequence !== 11 && sequence !== 12) return;
+        reordered.push(sequence);
+        if (reordered.length === 2) {
+          receiver.removeListener('audio-data', onAudio);
+          resolve();
+        }
+      };
+      receiver.on('audio-data', onAudio);
+    });
+    for (const sequence of [12, 11]) {
+      const header = Buffer.from(rtpHeader);
+      header.writeUInt16BE(sequence, 2);
+      await new Promise((resolve, reject) => audio.send(
+        Buffer.concat([header, Buffer.from([sequence])]),
+        response.streams[1].dataPort,
+        '127.0.0.1',
+        (error) => error ? reject(error) : resolve(),
+      ));
+    }
+    await reorderedPackets;
+    assert.deepEqual(reordered, [11, 12]);
 
     const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2');
     assert.equal(teardown.status, 200);

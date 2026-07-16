@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   FairPlaySession, createStubFairPlayProvider, classifyFpSetup, isFairPlayMessage,
-  FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH, FP_REPLY2_LENGTH, FPLY_HEADER,
+  FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH, FP_REPLY2_LENGTH,
+  FP_SETUP2_REPLY_HEADER, FPLY_HEADER,
 } from '../src/crypto/fairplay.js';
 
 function setup1(mode = 0) {
@@ -48,7 +49,10 @@ test('FairPlaySession drives the two-phase handshake with correct reply shapes',
 
   const reply2 = session.handle(setup2());
   assert.equal(reply2.length, FP_REPLY2_LENGTH);
+  assert.deepEqual(reply2.subarray(0, 12), FP_SETUP2_REPLY_HEADER);
+  assert.deepEqual(reply2.subarray(12), setup2().subarray(144));
   assert.equal(session.phase, 2);
+  assert.deepEqual(session.keyMessage, setup2());
 });
 
 test('FairPlaySession rejects phase 2 before phase 1', () => {

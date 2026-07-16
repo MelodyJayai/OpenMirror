@@ -12,11 +12,14 @@ npm test           # 运行协议层单元测试
 npm start          # 启动 CLI 接收器（mDNS 通告 + RTSP 服务）
 ```
 
+CLI 会在收到可解密的 H.264 镜像流后自动启动 `ffplay` 窗口；请先安装 FFmpeg（包含 ffplay）。服务器或 CI 环境可使用 `npm start -- --headless`，自定义路径可使用 `--ffplay <path>`。
+
 启动后，同一局域网内的 iPhone 打开控制中心 → 屏幕镜像，应能看到 `OpenMirror` 设备。
 
 ## 仓库结构
 
 - `packages/core` — 协议核心库（纯 JS、零依赖）：mDNS/DNS、RTSP、bplist、配对加密
+- `packages/media` — 媒体输出适配器：低延迟 ffplay H.264 播放、背压与进程生命周期
 - `apps/cli` — 命令行接收器，用于协议开发与联调
 - `docs/DEVELOPMENT_PLAN.md` — 详细开发计划（架构、协议拆解、里程碑、风险）
 

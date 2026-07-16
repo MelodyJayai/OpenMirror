@@ -10,7 +10,7 @@
     "apps/*"
   ],
   "scripts": {
-    "test": "node --test \"packages/core/test/*.test.js\"",
+    "test": "node --test \"packages/core/test/*.test.js\" \"packages/media/test/*.test.js\"",
     "start": "node apps/cli/src/main.js"
   },
   "engines": {

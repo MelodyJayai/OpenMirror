@@ -6,9 +6,9 @@
 //
 //   Phase 1 ("setup1"):  client → 16 bytes  "FPLY" 03 01 01 00 00 00 00 04 <…> <mode>
 //                        server → 142 bytes  a fixed reply chosen by <mode> (0..3)
-//   Phase 2 ("setup2"):  client → 164 bytes  "FPLY" 03 01 03 …  (carries the wrapped key)
-//                        server → 32 bytes    16 fixed bytes ‖ 16 bytes derived from
-//                                              the client message via the FairPlay cipher
+//   Phase 2 ("setup2"):  client → 164 bytes  "FPLY" 03 01 03 …  (key message)
+//                        server → 32 bytes    12-byte FPLY reply header ‖ the
+//                                              request's final 20 bytes
 //
 // The wire framing, phase detection and header validation are fully open and
 // implemented here. The reply *material* — the four 142-byte phase-1 replies
@@ -29,6 +29,9 @@ export const FP_SETUP1_LENGTH = 16;
 export const FP_SETUP2_LENGTH = 164;
 export const FP_REPLY1_LENGTH = 142;
 export const FP_REPLY2_LENGTH = 32;
+export const FP_SETUP2_REPLY_HEADER = Buffer.from([
+  0x46, 0x50, 0x4c, 0x59, 0x03, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x14,
+]);
 
 /** True when `body` begins with the FairPlay "FPLY" magic. */
 export function isFairPlayMessage(body) {
@@ -75,6 +78,7 @@ export class FairPlaySession {
   #mode = null;
   phase = 0;
   sharedKey = null;
+  keyMessage = null;
 
   constructor(provider) {
     if (!provider || typeof provider.phase1 !== 'function' || typeof provider.phase2 !== 'function') {
@@ -90,12 +94,14 @@ export class FairPlaySession {
       this.#mode = mode;
       this.phase = 1;
       this.sharedKey = null;
+      this.keyMessage = null;
       const reply = this.#provider.phase1(mode, body);
       assertLength(reply, FP_REPLY1_LENGTH, 'fp-setup phase 1 reply');
       return reply;
     }
     if (this.phase !== 1) throw new Error('fp-setup phase 2 before phase 1');
     this.phase = 2;
+    this.keyMessage = Buffer.from(body);
     const result = this.#provider.phase2(body, this.#mode);
     if (!result || typeof result !== 'object') {
       throw new Error('fp-setup phase 2 provider must return { reply, sharedKey? }');
@@ -141,9 +147,8 @@ export function createStubFairPlayProvider() {
     },
     phase2(request) {
       const reply = Buffer.alloc(FP_REPLY2_LENGTH);
-      // Real providers copy 16 fixed bytes then 16 cipher-derived bytes taken
-      // from the tail of the client message. We echo the tail for shape only.
-      request.subarray(request.length - 20, request.length - 4).copy(reply, 16);
+      FP_SETUP2_REPLY_HEADER.copy(reply, 0);
+      request.subarray(request.length - 20).copy(reply, FP_SETUP2_REPLY_HEADER.length);
       return { reply };
     },
   };
