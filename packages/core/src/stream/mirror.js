@@ -1,7 +1,10 @@
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
-import { buildTimingReply } from './timing.js';
+import {
+  buildTimingReply, buildTimingRequest, decodeTimingPacket, ntpNow,
+  timingReplySample, TIMING_REPLY,
+} from './timing.js';
 import { parseRtpPacket } from './rtp.js';
 import { RtspParser, encodeResponse } from '../rtsp/parser.js';
 
@@ -55,12 +58,24 @@ export class MirrorTransport extends EventEmitter {
   #timingSocket = null;
   #audioSocket = null;
   #audioControlSocket = null;
+  #timingRemote = null;
+  #timingTimer = null;
+  #timingSequence = 0;
+  #timingOrigins = new Set();
   #sockets = new Set();
   #maxFrameBytes;
+  #clock;
+  #timingIntervalMs;
 
-  constructor({ maxFrameBytes } = {}) {
+  constructor({ maxFrameBytes, clock = ntpNow, timingIntervalMs = 3000 } = {}) {
     super();
     this.#maxFrameBytes = maxFrameBytes;
+    if (typeof clock !== 'function') throw new Error('clock must be a function');
+    if (!Number.isFinite(timingIntervalMs) || timingIntervalMs < 10) {
+      throw new Error('timingIntervalMs must be at least 10');
+    }
+    this.#clock = clock;
+    this.#timingIntervalMs = timingIntervalMs;
   }
 
   async start(host) {
@@ -68,13 +83,34 @@ export class MirrorTransport extends EventEmitter {
     this.#videoServer = net.createServer((socket) => this.#acceptVideo(socket));
     this.#eventServer = net.createServer((socket) => this.#acceptEvent(socket));
 
-    // Timing requests are answered at the transport boundary to keep the
-    // sender's clock synchronization independent of the application layer.
+    // The same local port sends receiver-originated NTP probes and still
+    // answers legacy inbound timing requests for compatibility.
     this.#timingSocket = dgram.createSocket('udp4');
     this.#timingSocket.on('message', (message, remote) => {
-      const reply = buildTimingReply(message);
+      const receivedAtNtp = this.#clock();
+      let decoded = null;
+      let sample = null;
+      let reply = null;
+      try {
+        decoded = decodeTimingPacket(message);
+        const expectedReply = decoded.version === 2
+          && decoded.type === TIMING_REPLY
+          && remote.port === this.#timingRemote?.port
+          && remote.address === this.#timingRemote?.address
+          && this.#timingOrigins.delete(decoded.origin.toString());
+        if (expectedReply) {
+          sample = timingReplySample(decoded, receivedAtNtp);
+          this.emit('timing-sync', sample);
+        } else {
+          reply = buildTimingReply(message, this.#clock);
+        }
+      } catch {
+        // Stray datagrams can share the UDP port; expose them without failing.
+      }
       if (reply) this.#timingSocket.send(reply, remote.port, remote.address);
-      this.emit('timing-packet', { message, remote, replied: Boolean(reply) });
+      this.emit('timing-packet', {
+        message, remote, receivedAtNtp, decoded, sample, replied: Boolean(reply),
+      });
     });
     this.#timingSocket.on('error', (error) => this.emit('error', error));
 
@@ -90,7 +126,7 @@ export class MirrorTransport extends EventEmitter {
 
     this.#audioControlSocket = dgram.createSocket('udp4');
     this.#audioControlSocket.on('message', (message, remote) => {
-      this.emit('audio-control-packet', { message, remote });
+      this.emit('audio-control-packet', { message, remote, receivedAtMs: Date.now() });
     });
     this.#audioControlSocket.on('error', (error) => this.emit('error', error));
 
@@ -109,7 +145,24 @@ export class MirrorTransport extends EventEmitter {
     }
   }
 
+  /** Start probing the sender timing service advertised in its SETUP plist. */
+  configureTiming({ address, port }) {
+    if (!this.#timingSocket) throw new Error('Mirror transport is not started');
+    if (typeof address !== 'string' || !address) throw new Error('timing address is required');
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('invalid timing port');
+    this.#timingRemote = { address, port };
+    this.#timingOrigins.clear();
+    clearInterval(this.#timingTimer);
+    this.#sendTimingRequest();
+    this.#timingTimer = setInterval(() => this.#sendTimingRequest(), this.#timingIntervalMs);
+    this.#timingTimer.unref?.();
+  }
+
   async close() {
+    clearInterval(this.#timingTimer);
+    this.#timingTimer = null;
+    this.#timingRemote = null;
+    this.#timingOrigins.clear();
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
     const closers = [
@@ -125,6 +178,19 @@ export class MirrorTransport extends EventEmitter {
     this.#audioSocket = null;
     this.#audioControlSocket = null;
     await Promise.all(closers);
+  }
+
+  #sendTimingRequest() {
+    const remote = this.#timingRemote;
+    if (!remote || !this.#timingSocket) return;
+    const packet = buildTimingRequest(this.#timingSequence++, this.#clock);
+    const origin = packet.readBigUInt64BE(24).toString();
+    this.#timingOrigins.add(origin);
+    while (this.#timingOrigins.size > 8) this.#timingOrigins.delete(this.#timingOrigins.values().next().value);
+    this.#timingSocket.send(packet, remote.port, remote.address, (error) => {
+      if (error) this.emit('error', error);
+    });
+    this.emit('timing-request', { message: packet, remote });
   }
 
   #track(socket) {

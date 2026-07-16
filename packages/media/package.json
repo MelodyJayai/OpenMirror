@@ -7,7 +7,8 @@
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./ffplay": "./src/ffplay.js"
+    "./ffplay": "./src/ffplay.js",
+    "./ffplay-audio": "./src/ffplay-audio.js"
   },
   "engines": {
     "node": ">=20"

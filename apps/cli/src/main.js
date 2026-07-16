@@ -4,7 +4,7 @@
 
 import { parseArgs } from 'node:util';
 import { AirPlayReceiver, localIPv4Addresses } from '@openmirror/core';
-import { FfplayVideoSink, probeFfplay } from '@openmirror/media';
+import { FfplayAudioSink, FfplayVideoSink, probeFfplay } from '@openmirror/media';
 
 const { values } = parseArgs({
   options: {
@@ -14,6 +14,7 @@ const { values } = parseArgs({
     headless: { type: 'boolean', default: false },
     ffplay: { type: 'string', default: 'ffplay' },
     fullscreen: { type: 'boolean', default: false },
+    mute: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
 });
@@ -29,6 +30,7 @@ Usage: openmirror [options]
       --headless      Receive media without opening an ffplay window
       --ffplay <path> ffplay executable name/path (default: ffplay)
       --fullscreen    Open the video player fullscreen
+      --mute          Disable AAC-ELD audio output
   -h, --help          Show this help
 `);
   process.exit(0);
@@ -44,6 +46,7 @@ if (!values.headless && !displayEnabled) {
   console.warn(`[player] Cannot launch "${values.ffplay}"; continuing headless. Install FFmpeg/ffplay or pass --ffplay <path>.`);
 }
 const videoSinks = new Map();
+const audioSinks = new Map();
 
 function videoSinkFor(session) {
   if (!displayEnabled) return null;
@@ -66,6 +69,23 @@ function videoSinkFor(session) {
   return sink;
 }
 
+function audioSinkFor(session) {
+  if (!displayEnabled || values.mute) return null;
+  let sink = audioSinks.get(session);
+  if (sink) return sink;
+  sink = new FfplayAudioSink({ executable: values.ffplay });
+  sink.on('started', ({ pid }) => console.log(`[audio] opened ffplay decoder (pid ${pid}) for ${session.remoteAddress}`));
+  sink.on('process-error', (error) => console.error(`[audio] ${error.message}`));
+  sink.on('diagnostic', (message) => {
+    if (values.verbose) console.error(`[ffplay:audio] ${message}`);
+  });
+  sink.on('dropped', ({ packets, bytes, reason }) => {
+    if (values.verbose) console.warn(`[audio] dropped ${packets} packet(s), ${bytes} bytes (${reason})`);
+  });
+  audioSinks.set(session, sink);
+  return sink;
+}
+
 receiver.on('request', ({ method, uri, session }) => {
   if (values.verbose) console.log(`[rtsp] ${session.remoteAddress} ${method} ${uri}`);
 });
@@ -75,22 +95,40 @@ receiver.on('paired', ({ session }) => {
 receiver.on('fp-setup', ({ session, phase }) => {
   console.log(`[fairplay] ${session.remoteAddress} fp-setup phase ${phase}`);
 });
-receiver.on('setup', ({ session, ports }) => {
+receiver.on('setup', ({ session, ports, payload }) => {
   console.log(`[setup] ${session.remoteAddress} media ports: video TCP ${ports.videoPort}, event TCP ${ports.eventPort}, timing UDP ${ports.timingPort}, audio UDP ${ports.audioPort}/${ports.audioControlPort}`);
+  const audio = payload?.streams?.find((stream) => stream.type === 96);
+  if (audio && values.verbose) {
+    console.log(`[setup] audio ct=${audio.ct ?? 'unknown'} sr=${audio.sr ?? 44100} spf=${audio.spf ?? 'unknown'}`);
+  }
 });
 receiver.on('video-codec', ({ session, profile, level, sps, pps, annexB }) => {
   console.log(`[codec] ${session.remoteAddress} H.264 profile=${profile} level=${level} sps=${sps.length} pps=${pps.length}`);
   videoSinkFor(session)?.writeCodec({ annexB });
 });
-receiver.on('video-data', ({ session, annexB, keyframe, timestamp }) => {
+receiver.on('video-data', ({ session, annexB, keyframe, timestamp, timing }) => {
   if (values.verbose) console.log(`[h264] ${session.remoteAddress} ${annexB.length} bytes${keyframe ? ' (keyframe)' : ''} ts=${timestamp}`);
-  videoSinkFor(session)?.writeVideo({ annexB, keyframe });
+  videoSinkFor(session)?.writeVideo({ annexB, keyframe, timing });
 });
 receiver.on('video-frame', ({ session, type, payloadLength, timestamp }) => {
   if (values.verbose) console.log(`[video] ${session.remoteAddress} type=${type} bytes=${payloadLength} timestamp=${timestamp}`);
 });
-receiver.on('audio-data', ({ session, sequence, payload, encrypted }) => {
-  if (values.verbose) console.log(`[audio] ${session.remoteAddress} seq=${sequence} bytes=${payload.length}${encrypted ? ' (encrypted)' : ''}`);
+receiver.on('audio-data', (packet) => {
+  const { session, sequence, payload, encrypted, timing } = packet;
+  if (values.verbose) {
+    const delay = timing ? ` delay=${timing.delayMs.toFixed(1)}ms` : ' unsynchronized';
+    console.log(`[audio] ${session.remoteAddress} seq=${sequence} bytes=${payload.length}${encrypted ? ' (encrypted)' : ''}${delay}`);
+  }
+  audioSinkFor(session)?.writeAudio(packet);
+});
+receiver.on('audio-sync', ({ session, rtpTimestamp, nextRtpTimestamp, timing }) => {
+  if (values.verbose) console.log(`[audio-sync] ${session.remoteAddress} rtp=${rtpTimestamp} next=${nextRtpTimestamp} source=${timing?.source ?? 'pending'}`);
+});
+receiver.on('audio-dropped', ({ session, sequence, bytes, reason }) => {
+  if (values.verbose) console.warn(`[audio] ${session.remoteAddress} dropped seq=${sequence} bytes=${bytes} (${reason})`);
+});
+receiver.on('clock-sync', ({ session, clock }) => {
+  if (values.verbose) console.log(`[clock] ${session.remoteAddress} offset=${clock.offsetMs.toFixed(3)}ms rtt=${clock.roundTripMs.toFixed(3)}ms`);
 });
 receiver.on('timing-packet', ({ remote, replied }) => {
   if (values.verbose) console.log(`[timing] ${remote.address}:${remote.port}${replied ? ' -> replied' : ''}`);
@@ -109,6 +147,9 @@ receiver.on('teardown', ({ session }) => {
   const sink = videoSinks.get(session);
   videoSinks.delete(session);
   sink?.stop().catch((error) => console.error(`[player] ${error.message}`));
+  const audioSink = audioSinks.get(session);
+  audioSinks.delete(session);
+  audioSink?.stop().catch((error) => console.error(`[audio] ${error.message}`));
 });
 receiver.on('error', (err) => {
   console.error(`[error] ${err.message}`);
@@ -129,8 +170,12 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
     if (stopping) process.exit(1);
     stopping = true;
     console.log('\nStopping (sending mDNS goodbye)…');
-    await Promise.all([...videoSinks.values()].map((sink) => sink.stop()));
+    await Promise.all([
+      ...[...videoSinks.values()].map((sink) => sink.stop()),
+      ...[...audioSinks.values()].map((sink) => sink.stop()),
+    ]);
     videoSinks.clear();
+    audioSinks.clear();
     await receiver.stop();
     process.exit(0);
   });

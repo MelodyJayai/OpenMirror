@@ -55,6 +55,28 @@ test('FfplayVideoSink lazily starts and writes codec/video chunks in order', asy
   assert.equal(sink.running, false);
 });
 
+test('FfplayVideoSink schedules video against shared presentation timing', async () => {
+  const child = new FakeChild();
+  const chunks = [];
+  child.stdin.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+  const sink = new FfplayVideoSink({
+    clock: () => 1000,
+    spawnProcess() { return child; },
+  });
+  const scheduled = once(sink, 'scheduled');
+  const frame = Buffer.from([0, 0, 0, 1, 0x65]);
+  assert.equal(sink.writeVideo({
+    annexB: frame,
+    keyframe: true,
+    timing: { presentationTimeMs: 1015 },
+  }), true);
+  const [event] = await scheduled;
+  assert.equal(event.delayMs, 15);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(Buffer.concat(chunks), frame);
+  await sink.stop();
+});
+
 test('probeFfplay reports process exit status', async () => {
   const successfulSpawn = () => {
     const child = new FakeChild();

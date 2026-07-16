@@ -8,6 +8,7 @@
 //   0x55 (85)  — retransmit request
 
 export const RTP_HEADER_BYTES = 12;
+export const AUDIO_SYNC_PACKET_BYTES = 20;
 
 export const AUDIO_PAYLOAD = {
   DATA: 0x60,
@@ -15,6 +16,26 @@ export const AUDIO_PAYLOAD = {
   RETRANSMIT_REQUEST: 0x55,
   RETRANSMITTED: 0x56,
 };
+
+/** Parse the 20-byte AirPlay audio control-channel RTP↔NTP anchor. */
+export function parseAudioSyncPacket(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < AUDIO_SYNC_PACKET_BYTES) {
+    throw new Error(`audio sync packet must be at least ${AUDIO_SYNC_PACKET_BYTES} bytes`);
+  }
+  const version = buf[0] >> 6;
+  const payloadType = buf[1] & 0x7f;
+  if (version !== 2 || payloadType !== AUDIO_PAYLOAD.SYNC) {
+    throw new Error(`not an AirPlay audio sync packet (version=${version}, type=${payloadType})`);
+  }
+  return {
+    version,
+    first: Boolean(buf[0] & 0x10),
+    sequence: buf.readUInt16BE(2),
+    rtpTimestamp: buf.readUInt32BE(4),
+    remoteNtp: buf.readBigUInt64BE(8),
+    nextRtpTimestamp: buf.readUInt32BE(16),
+  };
+}
 
 /**
  * Parse one RTP datagram. Returns:

@@ -80,10 +80,15 @@ export class PairingSession {
   #clientCurvePub = null;  // raw 32-byte client x25519 key from pair-verify 1
   #serverCurvePub = null;
   #decipher = null;
+  #sharedSecret = null;
   verified = false;
 
   constructor(identity) {
     this.#identity = identity;
+  }
+
+  get sharedSecret() {
+    return this.verified && this.#sharedSecret ? Buffer.from(this.#sharedSecret) : null;
   }
 
   /** Handle POST /pair-setup body. Returns the 32-byte response body. */
@@ -117,6 +122,7 @@ export class PairingSession {
       privateKey: ecdh.privateKey,
       publicKey: x25519PublicFromRaw(this.#clientCurvePub),
     });
+    this.#sharedSecret = Buffer.from(shared);
 
     const aesKey = crypto.createHash('sha512')
       .update('Pair-Verify-AES-Key').update(shared).digest().subarray(0, 16);

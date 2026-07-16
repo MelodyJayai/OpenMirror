@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import {
-  deriveMirrorStreamKey, unsignedConnectionId,
+  deriveFairPlaySessionKey, deriveMirrorStreamKey, unsignedConnectionId,
   MirrorStreamDecryptor, AudioPacketDecryptor,
 } from '../src/crypto/stream.js';
 
@@ -23,6 +23,15 @@ test('deriveMirrorStreamKey matches the documented SHA512 derivation', () => {
     .update('AirPlayStreamIV42').update(sessionKey).digest().subarray(0, 16);
   assert.deepEqual(key, expectKey);
   assert.deepEqual(iv, expectIv);
+});
+
+test('deriveFairPlaySessionKey binds paired sessions to the X25519 secret', () => {
+  const unwrapped = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
+  const shared = Buffer.alloc(32, 0x5a);
+  const expected = crypto.createHash('sha256').update(unwrapped).update(shared).digest().subarray(0, 16);
+  assert.deepEqual(deriveFairPlaySessionKey(unwrapped, shared), expected);
+  assert.deepEqual(deriveFairPlaySessionKey(unwrapped), unwrapped);
+  assert.throws(() => deriveFairPlaySessionKey(unwrapped, Buffer.alloc(31)), /32 bytes/);
 });
 
 test('MirrorStreamDecryptor decrypts a continuous AES-CTR stream across frames', () => {

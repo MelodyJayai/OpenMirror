@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseRtpPacket, RtpSequencer, AUDIO_PAYLOAD } from '../src/stream/rtp.js';
+import {
+  parseRtpPacket, parseAudioSyncPacket, RtpSequencer, AUDIO_PAYLOAD,
+} from '../src/stream/rtp.js';
 
 function rtp({ payloadType = AUDIO_PAYLOAD.DATA, sequence = 0, timestamp = 0, ssrc = 1, marker = false, payload = Buffer.alloc(0) } = {}) {
   const header = Buffer.alloc(12);
@@ -35,6 +37,27 @@ test('parseRtpPacket strips padding and rejects truncated packets', () => {
   const badPadding = rtp({ payload: Buffer.from([1, 99]) });
   badPadding[0] |= 0x20;
   assert.throws(() => parseRtpPacket(badPadding), /padding/);
+});
+
+test('parseAudioSyncPacket extracts the RTP to remote-NTP anchor', () => {
+  const packet = Buffer.alloc(20);
+  packet[0] = 0x90;
+  packet[1] = 0xd4;
+  packet.writeUInt16BE(4, 2);
+  packet.writeUInt32BE(0xfffffff0, 4);
+  packet.writeBigUInt64BE(0x123456789abcdef0n, 8);
+  packet.writeUInt32BE(0x00001d39, 16);
+  assert.deepEqual(parseAudioSyncPacket(packet), {
+    version: 2,
+    first: true,
+    sequence: 4,
+    rtpTimestamp: 0xfffffff0,
+    remoteNtp: 0x123456789abcdef0n,
+    nextRtpTimestamp: 0x00001d39,
+  });
+  assert.throws(() => parseAudioSyncPacket(Buffer.alloc(19)), /at least 20/);
+  packet[1] = 0xd3;
+  assert.throws(() => parseAudioSyncPacket(packet), /not an AirPlay audio sync/);
 });
 
 test('RtpSequencer reorders out-of-order packets and drops stale ones', () => {

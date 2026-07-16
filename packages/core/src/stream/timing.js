@@ -1,7 +1,8 @@
 // AirPlay timing channel (NTP-style clock sync over UDP).
 //
-// The sender periodically probes the receiver's clock so it can schedule
-// audio/video presentation. Packets are 32 bytes, RTP-flavored:
+// The receiver periodically probes the sender's clock so it can map the
+// sender's boot-relative media timestamps onto the local wall clock. Packets
+// are 32 bytes, RTP-flavored:
 //
 //   byte 0      0x80                    (RTP version 2)
 //   byte 1      0xd2 = timing request / 0xd3 = timing reply (marker | PT)
@@ -34,7 +35,15 @@ export function ntpNow(nowMs = Date.now()) {
 export function ntpToUnixMs(ntp) {
   const seconds = (ntp >> 32n) - NTP_UNIX_OFFSET_SECONDS;
   const fraction = ntp & 0xffffffffn;
-  return Number(seconds) * 1000 + Number((fraction * 1000n) >> 32n);
+  return Number(seconds) * 1000 + Number(fraction) * 1000 / 0x100000000;
+}
+
+/** Convert NTP 32.32 fixed point to milliseconds without applying an epoch. */
+export function ntpFixedToMs(ntp) {
+  if (typeof ntp !== 'bigint') throw new Error('NTP timestamp must be a BigInt');
+  const seconds = ntp >> 32n;
+  const fraction = ntp & 0xffffffffn;
+  return Number(seconds) * 1000 + Number(fraction) * 1000 / 0x100000000;
 }
 
 /** Decode a 32-byte timing packet into its fields. */
@@ -81,4 +90,179 @@ export function buildTimingReply(requestBuf, clock = ntpNow) {
     receive: now,
     transmit: clock(),
   });
+}
+
+/** Build one receiver-to-sender AirPlay timing request. */
+export function buildTimingRequest(sequence = 0, clock = ntpNow) {
+  return encodeTimingPacket({
+    type: TIMING_REQUEST,
+    sequence,
+    transmit: clock(),
+  });
+}
+
+/**
+ * Calculate the standard NTP remote-minus-local clock offset from a sender
+ * reply. Sender timestamps intentionally use its boot-relative clock while
+ * retaining NTP's epoch bias, so ntpToUnixMs() yields remote monotonic ms.
+ */
+export function timingReplySample(replyOrBuffer, receivedAtNtp = ntpNow()) {
+  const reply = Buffer.isBuffer(replyOrBuffer) ? decodeTimingPacket(replyOrBuffer) : replyOrBuffer;
+  if (!reply || reply.version !== 2 || reply.type !== TIMING_REPLY) {
+    throw new Error('not an AirPlay timing reply');
+  }
+  if (typeof receivedAtNtp !== 'bigint') throw new Error('receivedAtNtp must be a BigInt');
+  const localSendMs = ntpToUnixMs(reply.origin);
+  const remoteReceiveMs = ntpToUnixMs(reply.receive);
+  const remoteTransmitMs = ntpToUnixMs(reply.transmit);
+  const localReceiveMs = ntpToUnixMs(receivedAtNtp);
+  return {
+    ...reply,
+    receivedAtNtp,
+    localSendMs,
+    remoteReceiveMs,
+    remoteTransmitMs,
+    localReceiveMs,
+    offsetMs: ((remoteReceiveMs - localSendMs) + (remoteTransmitMs - localReceiveMs)) / 2,
+    roundTripMs: (localReceiveMs - localSendMs) - (remoteTransmitMs - remoteReceiveMs),
+  };
+}
+
+/** Signed distance between two wrapping 32-bit RTP timestamps. */
+export function signedRtpDelta(timestamp, anchor) {
+  const delta = (Number(timestamp) - Number(anchor)) >>> 0;
+  return delta > 0x7fffffff ? delta - 0x100000000 : delta;
+}
+
+/** Add a signed number of sample ticks to an NTP 32.32 timestamp. */
+export function addRtpTicksToNtp(ntp, ticks, sampleRate = 44100) {
+  if (typeof ntp !== 'bigint') throw new Error('NTP timestamp must be a BigInt');
+  if (!Number.isInteger(ticks)) throw new Error('RTP ticks must be an integer');
+  if (!Number.isInteger(sampleRate) || sampleRate < 1) throw new Error('sampleRate must be positive');
+  return ntp + (BigInt(ticks) * (1n << 32n)) / BigInt(sampleRate);
+}
+
+/**
+ * Maps AirPlay's audio RTP clock and remote NTP timestamps onto the receiver's
+ * wall clock. Sync packets establish the shared anchor; a small smoothed
+ * offset and target latency turn jittery arrival times into presentation times.
+ */
+export class AirPlayMediaClock {
+  #sampleRate;
+  #targetLatencyMs;
+  #smoothing;
+  #clock;
+  #audioAnchor = null;
+  #timingOffsetMs = null;
+  #fallbackRemoteToLocalMs = null;
+  #bestRoundTripMs = Infinity;
+
+  constructor({
+    sampleRate = 44100,
+    targetLatencyMs = 120,
+    smoothing = 0.125,
+    clock = Date.now,
+  } = {}) {
+    if (!Number.isInteger(sampleRate) || sampleRate < 1) throw new Error('sampleRate must be positive');
+    if (!Number.isFinite(targetLatencyMs) || targetLatencyMs < 0) {
+      throw new Error('targetLatencyMs must be non-negative');
+    }
+    if (!Number.isFinite(smoothing) || smoothing <= 0 || smoothing > 1) {
+      throw new Error('smoothing must be in (0, 1]');
+    }
+    if (typeof clock !== 'function') throw new Error('clock must be a function');
+    this.#sampleRate = sampleRate;
+    this.#targetLatencyMs = targetLatencyMs;
+    this.#smoothing = smoothing;
+    this.#clock = clock;
+  }
+
+  get synchronized() {
+    return this.#timingOffsetMs !== null || this.#fallbackRemoteToLocalMs !== null;
+  }
+
+  get source() {
+    if (this.#timingOffsetMs !== null) return 'ntp';
+    if (this.#fallbackRemoteToLocalMs !== null) return 'arrival';
+    return null;
+  }
+
+  updateTimingReply(replyOrSample, receivedAtNtp = ntpNow()) {
+    const sample = replyOrSample?.offsetMs === undefined
+      ? timingReplySample(replyOrSample, receivedAtNtp)
+      : replyOrSample;
+    if (!Number.isFinite(sample.offsetMs) || !Number.isFinite(sample.roundTripMs)
+      || sample.roundTripMs < -1 || sample.roundTripMs > 10000) {
+      throw new Error('invalid timing sample');
+    }
+    this.#bestRoundTripMs = Math.min(this.#bestRoundTripMs, sample.roundTripMs);
+    if (sample.roundTripMs > this.#bestRoundTripMs + 20) {
+      return {
+        source: 'ntp',
+        offsetMs: this.#timingOffsetMs,
+        roundTripMs: sample.roundTripMs,
+        ignored: true,
+      };
+    }
+    this.#timingOffsetMs = this.#timingOffsetMs === null
+      ? sample.offsetMs
+      : this.#timingOffsetMs + (sample.offsetMs - this.#timingOffsetMs) * this.#smoothing;
+    return {
+      source: 'ntp',
+      offsetMs: this.#timingOffsetMs,
+      roundTripMs: sample.roundTripMs,
+    };
+  }
+
+  updateAudioSync({ rtpTimestamp, remoteNtp, nextRtpTimestamp = rtpTimestamp, receivedAtMs = this.#clock() }) {
+    if (!Number.isInteger(rtpTimestamp) || rtpTimestamp < 0 || rtpTimestamp > 0xffffffff) {
+      throw new Error('rtpTimestamp must be a 32-bit unsigned integer');
+    }
+    if (!Number.isInteger(nextRtpTimestamp) || nextRtpTimestamp < 0 || nextRtpTimestamp > 0xffffffff) {
+      throw new Error('nextRtpTimestamp must be a 32-bit unsigned integer');
+    }
+    if (typeof remoteNtp !== 'bigint') throw new Error('remoteNtp must be a BigInt');
+    if (!Number.isFinite(receivedAtMs)) throw new Error('receivedAtMs must be finite');
+
+    this.#audioAnchor = { rtpTimestamp, remoteNtp };
+    const observedRemoteToLocal = receivedAtMs - ntpToUnixMs(remoteNtp);
+    this.#fallbackRemoteToLocalMs = this.#fallbackRemoteToLocalMs === null
+      ? observedRemoteToLocal
+      : this.#fallbackRemoteToLocalMs
+        + (observedRemoteToLocal - this.#fallbackRemoteToLocalMs) * this.#smoothing;
+    return this.mapAudio(rtpTimestamp, receivedAtMs);
+  }
+
+  mapAudio(rtpTimestamp, nowMs = this.#clock()) {
+    if (!this.#audioAnchor || !this.synchronized) return null;
+    const ticks = signedRtpDelta(rtpTimestamp, this.#audioAnchor.rtpTimestamp);
+    const remoteNtp = addRtpTicksToNtp(this.#audioAnchor.remoteNtp, ticks, this.#sampleRate);
+    return this.#mapRemoteMs(ntpToUnixMs(remoteNtp), remoteNtp, nowMs);
+  }
+
+  mapRemoteNtp(remoteNtp, nowMs = this.#clock()) {
+    if (typeof remoteNtp !== 'bigint' || remoteNtp === 0n) return null;
+    return this.#mapRemoteMs(ntpToUnixMs(remoteNtp), remoteNtp, nowMs);
+  }
+
+  /** Mirror video timestamps are NTP fixed point without the 1900 epoch. */
+  mapVideo(remoteTimestamp, nowMs = this.#clock()) {
+    if (typeof remoteTimestamp !== 'bigint' || remoteTimestamp === 0n) return null;
+    return this.#mapRemoteMs(ntpFixedToMs(remoteTimestamp), remoteTimestamp, nowMs);
+  }
+
+  #mapRemoteMs(remoteTimeMs, remoteTimestamp, nowMs) {
+    if (!this.synchronized) return null;
+    const remoteToLocalMs = this.#timingOffsetMs === null
+      ? this.#fallbackRemoteToLocalMs
+      : -this.#timingOffsetMs;
+    const presentationTimeMs = remoteTimeMs + remoteToLocalMs + this.#targetLatencyMs;
+    return {
+      source: this.source,
+      remoteTimestamp,
+      remoteTimeMs,
+      presentationTimeMs,
+      delayMs: presentationTimeMs - nowMs,
+    };
+  }
 }

@@ -59,15 +59,16 @@ function clientHandshake(session) {
   const encryptedClientSig = cipher.update(clientSig);
 
   const step2 = Buffer.concat([Buffer.from([0, 0, 0, 0]), encryptedClientSig]);
-  return session.pairVerify(step2);
+  return { ...session.pairVerify(step2), shared };
 }
 
 test('full legacy pair-setup + pair-verify handshake succeeds', () => {
   const identity = new DeviceIdentity();
   const session = new PairingSession(identity);
-  const { done } = clientHandshake(session);
+  const { done, shared } = clientHandshake(session);
   assert.equal(done, true);
   assert.equal(session.verified, true);
+  assert.deepEqual(session.sharedSecret, shared);
 });
 
 test('tampered client signature is rejected', () => {

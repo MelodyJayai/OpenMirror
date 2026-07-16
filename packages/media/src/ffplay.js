@@ -36,6 +36,8 @@ export class FfplayVideoSink extends EventEmitter {
   #blocked = false;
   #queue = [];
   #queueBytes = 0;
+  #scheduled = new Set();
+  #scheduledBytes = 0;
 
   constructor(options = {}) {
     super();
@@ -43,14 +45,21 @@ export class FfplayVideoSink extends EventEmitter {
     if (!Number.isSafeInteger(maxQueueBytes) || maxQueueBytes < 1) {
       throw new Error('maxQueueBytes must be a positive safe integer');
     }
+    const maxScheduleDelayMs = options.maxScheduleDelayMs ?? 5000;
+    if (!Number.isFinite(maxScheduleDelayMs) || maxScheduleDelayMs < 1) {
+      throw new Error('maxScheduleDelayMs must be positive');
+    }
     this.#options = {
       executable: options.executable ?? 'ffplay',
       title: options.title ?? 'OpenMirror',
       fullscreen: options.fullscreen ?? false,
       extraArgs: options.extraArgs ?? [],
       maxQueueBytes,
+      maxScheduleDelayMs,
       spawnProcess: options.spawnProcess ?? spawn,
+      clock: options.clock ?? Date.now,
     };
+    if (typeof this.#options.clock !== 'function') throw new Error('clock must be a function');
   }
 
   get running() {
@@ -61,7 +70,37 @@ export class FfplayVideoSink extends EventEmitter {
     return this.#write(annexB, { priority: true, kind: 'codec' });
   }
 
-  writeVideo({ annexB, keyframe = false }) {
+  writeVideo({ annexB, keyframe = false, timing = null }) {
+    const presentationTimeMs = timing?.presentationTimeMs;
+    const delay = Number.isFinite(presentationTimeMs)
+      ? presentationTimeMs - this.#options.clock()
+      : 0;
+    if (delay > 1) {
+      if (!Buffer.isBuffer(annexB) || annexB.length === 0) return false;
+      if (delay > this.#options.maxScheduleDelayMs) {
+        this.emit('dropped', { bytes: annexB.length, chunks: 1, reason: 'timing-outlier' });
+        return false;
+      }
+      if (this.#scheduledBytes + annexB.length > this.#options.maxQueueBytes) {
+        if (!keyframe) {
+          this.emit('dropped', { bytes: annexB.length, chunks: 1, reason: 'schedule-limit' });
+          return false;
+        }
+        this.#dropScheduled('resync');
+      }
+      if (!this.start()) return false;
+      const item = { timer: null, bytes: annexB.length };
+      item.timer = setTimeout(() => {
+        this.#scheduled.delete(item);
+        this.#scheduledBytes -= item.bytes;
+        this.#write(annexB, { priority: keyframe, kind: keyframe ? 'keyframe' : 'video' });
+      }, delay);
+      item.timer.unref?.();
+      this.#scheduled.add(item);
+      this.#scheduledBytes += item.bytes;
+      this.emit('scheduled', { bytes: annexB.length, keyframe, delayMs: delay, presentationTimeMs });
+      return true;
+    }
     return this.#write(annexB, { priority: keyframe, kind: keyframe ? 'keyframe' : 'video' });
   }
 
@@ -110,6 +149,7 @@ export class FfplayVideoSink extends EventEmitter {
       throw new Error('forceAfterMs must be a non-negative number');
     }
     this.#dropQueue('stop');
+    this.#dropScheduled('stop');
 
     await new Promise((resolve) => {
       let settled = false;
@@ -195,11 +235,25 @@ export class FfplayVideoSink extends EventEmitter {
     this.emit('dropped', { bytes, chunks, reason });
   }
 
+  #dropScheduled(reason) {
+    if (!this.#scheduled.size) return;
+    let bytes = 0;
+    for (const item of this.#scheduled) {
+      clearTimeout(item.timer);
+      bytes += item.bytes;
+    }
+    const chunks = this.#scheduled.size;
+    this.#scheduled.clear();
+    this.#scheduledBytes = 0;
+    this.emit('dropped', { bytes, chunks, reason });
+  }
+
   #release(child) {
     if (this.#child !== child) return;
     this.#child = null;
     this.#blocked = false;
     this.#dropQueue('process-exit');
+    this.#dropScheduled('process-exit');
   }
 }
 

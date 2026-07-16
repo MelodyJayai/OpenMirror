@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import dgram from 'node:dgram';
 import crypto from 'node:crypto';
-import { AirPlayReceiver } from '../src/index.js';
+import { AirPlayReceiver, ntpNow } from '../src/index.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
 import { rawEd25519PublicKey, x25519PublicFromRaw, ed25519PublicFromRaw } from '../src/crypto/pairing.js';
@@ -149,7 +149,7 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
       timingProtocol: 'NTP',
       streams: [
         { type: 110, streamConnectionID: 123456 },
-        { type: 96, audioFormat: 0x40000 },
+        { type: 96, audioFormat: 0x40000, ct: 8, sr: 44100, spf: 480 },
       ],
     });
     const setup = await client.request('SETUP rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 1', setupBody);
@@ -179,17 +179,48 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.equal(frame.timestamp, 777n);
     assert.deepEqual(frame.payload, payload);
 
-    const audioReceived = new Promise((resolve) => receiver.once('audio-data', resolve));
     audio = dgram.createSocket('udp4');
+    let audioDelivered = false;
+    const audioReceived = new Promise((resolve) => receiver.once('audio-data', (packet) => {
+      audioDelivered = true;
+      resolve(packet);
+    }));
     const rtpHeader = Buffer.alloc(12);
     rtpHeader[0] = 0x80;
     rtpHeader[1] = 96;
     rtpHeader.writeUInt16BE(10, 2);
+    rtpHeader.writeUInt32BE(1440, 4);
     const audioPayload = Buffer.from([4, 5, 6]);
-    audio.send(Buffer.concat([rtpHeader, audioPayload]), response.streams[1].dataPort, '127.0.0.1');
+    await new Promise((resolve, reject) => audio.send(
+      Buffer.concat([rtpHeader, audioPayload]),
+      response.streams[1].dataPort,
+      '127.0.0.1',
+      (error) => error ? reject(error) : resolve(),
+    ));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(audioDelivered, false, 'audio waits for the first RTP/NTP sync anchor');
+
+    const synchronized = new Promise((resolve) => receiver.once('audio-sync', resolve));
+    const syncPacket = Buffer.alloc(20);
+    syncPacket[0] = 0x90;
+    syncPacket[1] = 0xd4;
+    syncPacket.writeUInt16BE(4, 2);
+    syncPacket.writeUInt32BE(960, 4);
+    syncPacket.writeBigUInt64BE(ntpNow(), 8);
+    syncPacket.writeUInt32BE(1440, 16);
+    audio.send(syncPacket, response.streams[1].controlPort, '127.0.0.1');
+    const sync = await synchronized;
+    assert.equal(sync.rtpTimestamp, 960);
+    assert.equal(sync.timing.source, 'arrival');
+
     const audioPacket = await audioReceived;
     assert.equal(audioPacket.sequence, 10);
     assert.equal(audioPacket.encrypted, true);
+    assert.equal(audioPacket.compressionType, 8);
+    assert.equal(audioPacket.samplesPerFrame, 480);
+    assert.equal(audioPacket.sampleRate, 44100);
+    assert.equal(audioPacket.timing.source, 'arrival');
+    assert.ok(Number.isFinite(audioPacket.timing.presentationTimeMs));
     assert.deepEqual(audioPacket.payload, audioPayload);
 
     const reordered = [];

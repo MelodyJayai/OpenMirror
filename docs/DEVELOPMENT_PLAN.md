@@ -85,7 +85,8 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 ├────────────────────────────────────────────────────────┤
 │              媒体层  packages/media                         │
 │  ffplay.js   H.264 Annex-B 低延迟播放、背压与进程管理       │
-│  (后续)      AAC 解码/音频输出、WebCodecs 桌面渲染          │
+│  ffplay-audio AAC-ELD/RFC 3640 转发、解码与时钟调度          │
+│  (后续)      WebCodecs/WebAudio 桌面内嵌渲染                 │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -120,7 +121,9 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 | **M6 Google Cast** | mDNS `_googlecast._tcp`、TLS 8009、protobuf CastChannel、镜像 app | Android/Chrome 可投放 |
 | **M7 Miracast（评估）** | Windows 上依托 OS Wi-Fi Direct API 评估可行性 | 可行性报告 + 原型 |
 
-**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配，并集成 GPL PlayFair/SAPv2.5 的无宿主导入 WebAssembly provider，可完成四模式 fp-setup 与 72 字节 `ekey` → 16 字节媒体密钥解包；M4 已具备镜像 TCP 帧增量解析、AES 视频/音频解密器、H.264 avcC 参数集解析与 AVCC→Annex-B 转换、音频 RTP 解包和重排序、NTP timing 自动应答、eventPort 反向 HTTP/bplist 事件通道，以及独立 `packages/media` 的 ffplay 低延迟视频窗口。**尚未完成**：AAC 解码/输出与精确音画同步、真机互操作回归、M5 桌面应用与完整 RAOP。
+**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配，并集成 GPL PlayFair/SAPv2.5 的无宿主导入 WebAssembly provider，可完成四模式 fp-setup、72 字节 `ekey` → 16 字节媒体密钥解包，以及 legacy pairing 下 `SHA-256(mediaKey ‖ X25519Secret)` 会话密钥绑定。M4 已具备镜像 TCP 帧增量解析、AES 视频/音频解密器、H.264 avcC 参数集解析与 AVCC→Annex-B 转换、音频 RTP 解包和重排序、向发送端 `timingPort` 主动采样的 NTP 时钟、0x54 音频同步包解析、远端 RTP/NTP/视频时间戳到本地呈现时间的统一映射、eventPort 反向 HTTP/bplist 事件通道，以及 `packages/media` 中按共享时钟调度的 ffplay H.264 视频与 AAC-ELD/RFC 3640 音频输出。AAC-ELD 解码路径已用 FFmpeg 官方 44.1 kHz ELD 测试向量验证。**尚未完成**：iPhone/iPad 真机端到端互操作与延迟调优、单进程帧级音画同步、M5 桌面应用与完整 RAOP。
+
+当前 ffplay MVP 使用独立音频/视频进程，并在送入解码器前用同一个 AirPlay 远端时钟安排数据；这能建立低延迟同步基线，但不等同于单一媒体图中的硬件时钟锁定。桌面端阶段将用统一 WebCodecs/WebAudio（或原生媒体图）进一步收紧漂移和设备输出延迟。
 
 ---
 
@@ -135,10 +138,10 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 │       ├─ plist/                bplist.js（bplist00 编解码）
 │       ├─ rtsp/                 parser.js（增量解析）、server.js（RTSP 服务器）
 │       ├─ crypto/               pairing.js（pair-setup/verify）、fairplay.js（fp-setup）、playfair-provider.js/WASM（密钥解包）、stream.js（流解密）
-│       ├─ stream/               mirror.js（镜像 TCP/UDP 传输）、h264.js（AVCC→Annex-B）、rtp.js（音频 RTP）、timing.js（NTP 应答）
+│       ├─ stream/               mirror.js（镜像 TCP/UDP 传输）、h264.js（AVCC→Annex-B）、rtp.js（音频 RTP/同步）、timing.js（NTP 主动校时/媒体时钟）
 │       └─ index.js              总入口 AirPlayReceiver
 ├─ apps/cli/                     命令行接收器（协议验证用）
-├─ packages/media/               ffplay 视频输出与媒体进程管理
+├─ packages/media/               ffplay 视频输出、AAC-ELD 音频与媒体时钟调度
 └─ test/ (packages/core/test)    单元测试
 ```
 

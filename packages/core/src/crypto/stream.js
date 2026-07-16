@@ -31,6 +31,22 @@ export function unsignedConnectionId(id) {
   return big.toString(10);
 }
 
+/**
+ * Legacy-paired senders bind the PlayFair-unwrapped key to pair-verify's
+ * X25519 secret with SHA-256. Unpaired/old-protocol senders use it directly.
+ */
+export function deriveFairPlaySessionKey(unwrappedKey, pairingSecret = null) {
+  if (!Buffer.isBuffer(unwrappedKey) || unwrappedKey.length < 16) {
+    throw new Error('unwrappedKey must be at least 16 bytes');
+  }
+  const key = unwrappedKey.subarray(0, 16);
+  if (pairingSecret === null || pairingSecret === undefined) return Buffer.from(key);
+  if (!Buffer.isBuffer(pairingSecret) || pairingSecret.length !== 32) {
+    throw new Error('pairingSecret must be 32 bytes');
+  }
+  return crypto.createHash('sha256').update(key).update(pairingSecret).digest().subarray(0, 16);
+}
+
 /** Derive the AES-CTR key/iv for a mirroring video stream. */
 export function deriveMirrorStreamKey(sessionKey, streamConnectionId) {
   if (!Buffer.isBuffer(sessionKey) || sessionKey.length < 16) {
