@@ -5,7 +5,9 @@
 
 import { EventEmitter } from 'node:events';
 import { MdnsResponder } from './discovery/responder.js';
-import { buildServices, randomDeviceId, DEFAULT_FEATURES } from './discovery/airplay.js';
+import {
+  buildServices, pairingIdentifier, randomDeviceId, DEFAULT_FEATURES,
+} from './discovery/airplay.js';
 import { RtspServer } from './rtsp/server.js';
 import { encodeBplist, decodeBplist } from './plist/bplist.js';
 import { DeviceIdentity, PairingSession } from './crypto/pairing.js';
@@ -26,7 +28,10 @@ import { MediaActivityMonitor } from './stream/activity.js';
 
 export { MdnsResponder, localIPv4Addresses, isUsableLanIPv4 } from './discovery/responder.js';
 export * as dns from './discovery/dns.js';
-export { buildServices, randomDeviceId, DEFAULT_FEATURES, FEATURES, formatFeatures } from './discovery/airplay.js';
+export {
+  buildServices, pairingIdentifier, randomDeviceId,
+  DEFAULT_FEATURES, FEATURES, formatFeatures,
+} from './discovery/airplay.js';
 export { RtspServer } from './rtsp/server.js';
 export { RtspParser, encodeResponse } from './rtsp/parser.js';
 export { encodeBplist, decodeBplist } from './plist/bplist.js';
@@ -70,10 +75,12 @@ export class AirPlayReceiver extends EventEmitter {
 
   constructor(options = {}) {
     super();
+    const deviceId = options.deviceId ?? randomDeviceId();
     this.#options = {
       name: options.name ?? 'OpenMirror',
       port: options.port ?? 7000,
-      deviceId: options.deviceId ?? randomDeviceId(),
+      deviceId,
+      pairingId: options.pairingId ?? pairingIdentifier(deviceId),
       features: options.features ?? DEFAULT_FEATURES,
       hostname: options.hostname,
       addresses: options.addresses,
@@ -123,6 +130,7 @@ export class AirPlayReceiver extends EventEmitter {
     for (const service of buildServices({
       name: this.#options.name,
       deviceId: this.#options.deviceId,
+      pairingId: this.#options.pairingId,
       publicKeyHex: this.#identity.publicKeyHex,
       airplayPort: port,
       features: this.#options.features,
@@ -575,7 +583,7 @@ export class AirPlayReceiver extends EventEmitter {
       model: 'AppleTV3,2',
       name: this.#options.name,
       srcvers: '220.68',
-      pi: this.#options.deviceId.toLowerCase(),
+      pi: this.#options.pairingId,
       pk: this.#identity.publicKeyRaw,
       vv: 2,
       statusFlags: 4,

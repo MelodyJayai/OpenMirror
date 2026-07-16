@@ -86,6 +86,8 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     const dict = decodeBplist(info.body);
     assert.equal(dict.name, 'E2ETest');
     assert.equal(dict.features, Number(DEFAULT_FEATURES));
+    assert.equal(dict.pi, receiver.options.pairingId);
+    assert.match(dict.pi, /^[0-9a-f-]{36}$/);
     assert.ok(dict.deviceid);
     assert.equal(dict.pk.length, 32);
     assert.deepEqual(Buffer.from(dict.pk), receiver.identity.publicKeyRaw);

@@ -76,9 +76,31 @@ export function randomDeviceId() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
 }
 
+/** Stable UUID-format pairing identifier derived from the receiver device id. */
+export function pairingIdentifier(deviceId) {
+  if (typeof deviceId !== 'string' || !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(deviceId)) {
+    throw new Error('deviceId must be a colon-separated 6-byte identifier');
+  }
+  const bytes = crypto.createHash('sha256')
+    .update('OpenMirror AirPlay Pairing Identifier\0')
+    .update(deviceId.toUpperCase())
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20),
+  ].join('-');
+}
+
 /**
  * Build the two mDNS service registrations (AirPlay + RAOP) for a receiver.
- * identity: { name, deviceId, publicKeyHex, airplayPort, features?, pin? }
+ * identity: { name, deviceId, publicKeyHex, airplayPort, features?, pairingId? }
  */
 export function buildServices(identity) {
   const {
@@ -88,6 +110,7 @@ export function buildServices(identity) {
     airplayPort = 7000,
     features = DEFAULT_FEATURES,
     model = 'AppleTV3,2',
+    pairingId = pairingIdentifier(deviceId),
   } = identity;
 
   const featuresTxt = formatFeatures(features);
@@ -98,6 +121,8 @@ export function buildServices(identity) {
     flags: '0x4',
     model,
     pk: publicKeyHex,
+    pi: pairingId,
+    pw: 'false',
     srcvers: '220.68',
     vv: '2',
   };
@@ -114,6 +139,8 @@ export function buildServices(identity) {
     am: model,
     md: '0,1,2',        // metadata: text, artwork, progress
     pk: publicKeyHex,
+    pw: 'false',
+    rhd: '5.6.0.0',
     sf: '0x4',
     sr: '44100',
     ss: '16',

@@ -5,7 +5,10 @@ import crypto from 'node:crypto';
 import { RtspServer } from '../src/rtsp/server.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
-import { buildServices, formatFeatures, DEFAULT_FEATURES, randomDeviceId } from '../src/discovery/airplay.js';
+import {
+  buildServices, formatFeatures, DEFAULT_FEATURES,
+  pairingIdentifier, randomDeviceId,
+} from '../src/discovery/airplay.js';
 import { isUsableLanIPv4 } from '../src/discovery/responder.js';
 
 test('LAN address filtering excludes loopback, multicast and benchmark adapters', () => {
@@ -42,12 +45,16 @@ test('buildServices produces AirPlay + RAOP registrations with required TXT keys
     assert.ok(airplay.txt[key], `airplay TXT missing ${key}`);
   }
   assert.equal(airplay.txt.features, '0x5A7FFEE6');
+  assert.equal(airplay.txt.pw, 'false');
+  assert.match(airplay.txt.pi, /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/);
   assert.equal(raop.type, '_raop._tcp.local');
   assert.equal(raop.name, 'AABBCCDDEEFF@TestMirror');
   for (const key of ['ch', 'cn', 'et', 'ft', 'pk', 'tp']) {
     assert.ok(raop.txt[key], `raop TXT missing ${key}`);
   }
   assert.equal(raop.txt.ft, airplay.txt.features);
+  assert.equal(raop.txt.pw, 'false');
+  assert.equal(raop.txt.rhd, '5.6.0.0');
 });
 
 test('randomDeviceId returns a locally-administered unicast MAC', () => {
@@ -56,6 +63,14 @@ test('randomDeviceId returns a locally-administered unicast MAC', () => {
   const first = parseInt(id.slice(0, 2), 16);
   assert.equal(first & 0x01, 0, 'must be unicast');
   assert.equal(first & 0x02, 2, 'must be locally administered');
+});
+
+test('pairingIdentifier is a deterministic RFC 4122 name UUID', () => {
+  const id = pairingIdentifier('AA:BB:CC:DD:EE:FF');
+  assert.equal(id, pairingIdentifier('aa:bb:cc:dd:ee:ff'));
+  assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(id, pairingIdentifier('AA:BB:CC:DD:EE:FE'));
+  assert.throws(() => pairingIdentifier('not-a-device-id'), /deviceId/);
 });
 
 /** Send raw RTSP bytes over a socket and resolve with parsed responses. */

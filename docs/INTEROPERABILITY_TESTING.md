@@ -6,6 +6,7 @@
 
 - iPhone/iPad 与接收端位于同一局域网，网络允许 mDNS（UDP 5353）和设备间 TCP/UDP 通信。
 - 接收器在 `_airplay._tcp`、`_raop._tcp` 与 `/info` 中统一使用经过真机验证的 legacy mirroring feature mask `0x5A7FFEE6`；不要为尚未实现的 HLS 或现代配对能力额外置位。
+- `_airplay` TXT 与 `/info` 必须返回同一个、由设备 ID 确定性生成的 UUID 格式 `pi`，并显式广播 `pw=false`；这可以避免 iOS 把同一接收器误判成未建立信任的新端点。
 - Node.js 20 或更高版本。
 - 已安装包含 `ffplay` 的 FFmpeg，并可从终端执行 `ffplay -version`。
 - 首次运行若 Windows/macOS 弹出防火墙提示，应允许当前局域网访问。
