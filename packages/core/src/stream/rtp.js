@@ -10,6 +10,7 @@
 export const RTP_HEADER_BYTES = 12;
 export const AUDIO_SYNC_PACKET_BYTES = 20;
 export const AUDIO_RETRANSMIT_REQUEST_BYTES = 8;
+export const AAC_ELD_NO_DATA_MARKER = Buffer.from([0x00, 0x68, 0x34, 0x00]);
 
 export const AUDIO_PAYLOAD = {
   DATA: 0x60,
@@ -17,6 +18,21 @@ export const AUDIO_PAYLOAD = {
   RETRANSMIT_REQUEST: 0x55,
   RETRANSMITTED: 0x56,
 };
+
+/**
+ * AirPlay mirror audio advances RTP sequence/time with empty packets or a
+ * four-byte AAC-ELD marker before real audio starts. These are not decoder
+ * access units, but must still pass through sequencing to avoid false gaps.
+ */
+export function isAudioNoDataPayload(payload, compressionType) {
+  if (!Buffer.isBuffer(payload)) return false;
+  return payload.length === 0
+    || (
+      compressionType === 8
+      && payload.length === AAC_ELD_NO_DATA_MARKER.length
+      && payload.equals(AAC_ELD_NO_DATA_MARKER)
+    );
+}
 
 /** Build the 8-byte AirPlay/RAOP request for one contiguous missing RTP range. */
 export function buildAudioRetransmitRequest({

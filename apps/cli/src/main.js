@@ -425,6 +425,13 @@ receiver.on('audio-sync', ({ session, rtpTimestamp, nextRtpTimestamp, timing }) 
     );
   }
 });
+receiver.on('audio-no-data', ({ session, sequence, timestamp }) => {
+  if (values.verbose) {
+    console.log(
+      `[audio] ${session.remoteAddress} seq=${sequence} timestamp=${timestamp} (no data)`,
+    );
+  }
+});
 receiver.on('audio-dropped', ({ session, sequence, bytes, reason }) => {
   if (values.verbose) {
     console.warn(

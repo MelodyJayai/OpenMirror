@@ -6,8 +6,10 @@ import {
   parseRetransmittedAudioPacket,
   parseRtpPacket,
   parseAudioSyncPacket,
+  isAudioNoDataPayload,
   RtpSequencer,
   AUDIO_PAYLOAD,
+  AAC_ELD_NO_DATA_MARKER,
 } from '../src/stream/rtp.js';
 
 function rtp({ payloadType = AUDIO_PAYLOAD.DATA, sequence = 0, timestamp = 0, ssrc = 1, marker = false, payload = Buffer.alloc(0) } = {}) {
@@ -64,6 +66,15 @@ test('parseAudioSyncPacket extracts the RTP to remote-NTP anchor', () => {
   assert.throws(() => parseAudioSyncPacket(Buffer.alloc(19)), /at least 20/);
   packet[1] = 0xd3;
   assert.throws(() => parseAudioSyncPacket(packet), /not an AirPlay audio sync/);
+});
+
+test('AAC-ELD no-data payloads are distinguished from decoder access units', () => {
+  assert.equal(isAudioNoDataPayload(Buffer.alloc(0), 8), true);
+  assert.equal(isAudioNoDataPayload(AAC_ELD_NO_DATA_MARKER, 8), true);
+  assert.equal(isAudioNoDataPayload(AAC_ELD_NO_DATA_MARKER, 2), false);
+  assert.equal(isAudioNoDataPayload(Buffer.from([0x00, 0x68, 0x34, 0x01]), 8), false);
+  assert.equal(isAudioNoDataPayload(Buffer.from([0x70, 1, 2]), 8), false);
+  assert.equal(isAudioNoDataPayload(null, 8), false);
 });
 
 test('audio retransmit request and response packets match AirPlay control framing', () => {

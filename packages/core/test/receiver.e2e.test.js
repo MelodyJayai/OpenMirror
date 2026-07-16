@@ -219,6 +219,14 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.deepEqual(frame.payload, payload);
 
     let audioDelivered = false;
+    const noDataPackets = [];
+    const noDataReceived = new Promise((resolve) => {
+      const onNoData = (packet) => {
+        noDataPackets.push(packet);
+        if (noDataPackets.length === 1) resolve(packet);
+      };
+      receiver.on('audio-no-data', onNoData);
+    });
     const audioReceived = new Promise((resolve) => receiver.once('audio-data', (packet) => {
       audioDelivered = true;
       resolve(packet);
@@ -229,6 +237,33 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     rtpHeader.writeUInt16BE(10, 2);
     rtpHeader.writeUInt32BE(1440, 4);
     const audioPayload = Buffer.from([4, 5, 6]);
+    const noDataHeader = Buffer.from(rtpHeader);
+    noDataHeader.writeUInt16BE(9, 2);
+    noDataHeader.writeUInt32BE(960, 4);
+    const noDataPacket = Buffer.concat([
+      noDataHeader,
+      Buffer.from([0x00, 0x68, 0x34, 0x00]),
+    ]);
+    for (let index = 0; index < 2; index++) {
+      await new Promise((resolve, reject) => audio.send(
+        noDataPacket,
+        response.streams[1].dataPort,
+        '127.0.0.1',
+        (error) => error ? reject(error) : resolve(),
+      ));
+    }
+    await new Promise((resolve, reject) => audio.send(
+      Buffer.concat([rtpHeader, audioPayload]),
+      response.streams[1].dataPort,
+      '127.0.0.1',
+      (error) => error ? reject(error) : resolve(),
+    ));
+    await new Promise((resolve, reject) => audio.send(
+      noDataPacket,
+      response.streams[1].dataPort,
+      '127.0.0.1',
+      (error) => error ? reject(error) : resolve(),
+    ));
     await new Promise((resolve, reject) => audio.send(
       Buffer.concat([rtpHeader, audioPayload]),
       response.streams[1].dataPort,
@@ -237,6 +272,11 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     ));
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.equal(audioDelivered, false, 'audio waits for the first RTP/NTP sync anchor');
+    const noData = await noDataReceived;
+    assert.equal(noData.sequence, 9);
+    assert.equal(noData.timestamp, 960);
+    assert.equal(noData.bytes, 4);
+    assert.equal(noDataPackets.length, 1, 'triplicated no-data RTP is reported once after sequencing');
 
     const synchronized = new Promise((resolve) => receiver.once('audio-sync', resolve));
     const syncPacket = Buffer.alloc(20);

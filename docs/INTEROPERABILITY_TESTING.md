@@ -80,6 +80,7 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 - 旋转后 `videoFormat.width/height/orientation/revision` 更新，播放自动恢复。
 - FLUSH、锁屏静默、异常 RTSP 断开和主动 TEARDOWN 均会回收播放器；重连产生同一匿名 peer 的递增 `reconnectIndex`。
 - `streamErrors` 不持续增长；RTP 报告包含乱序/重复/迟到/最终缺口，以及 `retransmitRequests`、`retransmittedReceived`、`retransmittedRecovered` 和实际控制报文发送统计。弱网出现丢包时应优先由 `0x55/0x56` 重传恢复，`gapsSkipped`/`retransmitUnrecovered` 不应持续增长。
+- iOS 启动 AAC-ELD 时的空 RTP 与 `00 68 34 00` 占位报文只推进序列号，并计入 `audioNoDataPackets`；它们不应计入已解密音频包、首个音频里程碑或延迟统计。
 - 延迟 p95、A/V 偏差和 drift ppm 应结合实际网络记录并用于后续调优。
 
 ## 诊断数据说明

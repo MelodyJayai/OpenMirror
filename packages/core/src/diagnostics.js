@@ -231,6 +231,9 @@ export class AirPlayDiagnostics extends EventEmitter {
       this.#milestone(record, 'firstAudio');
     });
     this.#listen('audio-sync', ({ session }) => this.#milestone(this.#recordFor(session), 'firstAudioSync'));
+    this.#listen('audio-no-data', ({ session }) => {
+      this.#recordFor(session).counts.audioNoDataPackets++;
+    });
     this.#listen('audio-dropped', ({ session, bytes = 0, reason = 'unknown' }) => {
       const record = this.#recordFor(session);
       record.counts.audioDrops++;
@@ -348,6 +351,7 @@ export class AirPlayDiagnostics extends EventEmitter {
         audioPackets: 0,
         audioBytes: 0,
         encryptedAudioPackets: 0,
+        audioNoDataPackets: 0,
         audioDrops: 0,
         audioDroppedBytes: 0,
         streamErrors: 0,

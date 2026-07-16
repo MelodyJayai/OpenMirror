@@ -19,7 +19,7 @@ import {
   H264StreamProcessor, MIRROR_PAYLOAD, isMirrorVideoSuspended,
 } from './stream/h264.js';
 import {
-  AUDIO_PAYLOAD, RtpSequencer, parseAudioSyncPacket,
+  AUDIO_PAYLOAD, RtpSequencer, isAudioNoDataPayload, parseAudioSyncPacket,
 } from './stream/rtp.js';
 import { AirPlayMediaClock } from './stream/timing.js';
 import { MediaActivityMonitor } from './stream/activity.js';
@@ -49,8 +49,8 @@ export {
 export {
   parseRtpPacket, parseAudioSyncPacket, parseAudioRetransmitRequest,
   parseRetransmittedAudioPacket, buildAudioRetransmitRequest,
-  RtpSequencer, AUDIO_PAYLOAD, RTP_HEADER_BYTES, AUDIO_SYNC_PACKET_BYTES,
-  AUDIO_RETRANSMIT_REQUEST_BYTES,
+  isAudioNoDataPayload, RtpSequencer, AUDIO_PAYLOAD, AAC_ELD_NO_DATA_MARKER,
+  RTP_HEADER_BYTES, AUDIO_SYNC_PACKET_BYTES, AUDIO_RETRANSMIT_REQUEST_BYTES,
 } from './stream/rtp.js';
 export {
   ntpNow, ntpToUnixMs, ntpFixedToMs, decodeTimingPacket, encodeTimingPacket,
@@ -401,6 +401,18 @@ export class AirPlayReceiver extends EventEmitter {
     };
     const audioSequencer = new RtpSequencer(
       (packet) => {
+        if (isAudioNoDataPayload(
+          packet.payload,
+          session.state.audio?.compressionType,
+        )) {
+          this.emit('audio-no-data', {
+            sequence: packet.sequence,
+            timestamp: packet.timestamp,
+            bytes: packet.payload.length,
+            session,
+          });
+          return;
+        }
         const timing = mediaClock.mapAudio(packet.timestamp);
         if (!timing) {
           pendingAudio.push(packet);

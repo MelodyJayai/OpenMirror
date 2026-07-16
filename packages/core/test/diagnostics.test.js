@@ -75,6 +75,12 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
     encrypted: false,
     timing: { delayMs: 125 },
   });
+  receiver.emit('audio-no-data', {
+    session,
+    sequence: 1,
+    timestamp: 0,
+    bytes: 4,
+  });
   receiver.emit('audio-rtp-event', {
     session,
     stats: {
@@ -127,6 +133,7 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
   assert.equal(item.audioFormat.retransmitAvailable, true);
   assert.equal(item.counts.videoBytes, 100);
   assert.equal(item.counts.audioBytes, 20);
+  assert.equal(item.counts.audioNoDataPackets, 1);
   assert.equal(item.latencyMs.audioMinusVideo.mean, 5);
   assert.equal(item.clock.drift.driftMs, 0.09999999999999964);
   assert.equal(item.rtp.gapsSkipped, 1);
