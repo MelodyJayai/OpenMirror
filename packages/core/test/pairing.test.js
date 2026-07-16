@@ -103,3 +103,14 @@ test('DeviceIdentity is reproducible from a seed', () => {
   assert.equal(a.publicKeyHex, b.publicKeyHex);
   assert.equal(a.publicKeyRaw.length, 32);
 });
+
+test('DeviceIdentity rejects malformed persistent seed material', () => {
+  assert.throws(
+    () => new DeviceIdentity({ privateKeySeed: Buffer.alloc(31) }),
+    /exactly 32 bytes/,
+  );
+  assert.throws(
+    () => new DeviceIdentity({ privateKeySeed: null }),
+    /exactly 32 bytes/,
+  );
+});

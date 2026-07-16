@@ -7,6 +7,10 @@ import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
+  defaultReceiverIdentityPath,
+  loadOrCreateReceiverIdentity,
+} from './identity.js';
+import {
   AirPlayDiagnostics,
   AirPlayReceiver,
   formatFeatures,
@@ -26,6 +30,7 @@ const { values } = parseArgs({
     fullscreen: { type: 'boolean', default: false },
     mute: { type: 'boolean', default: false },
     'advertise-address': { type: 'string' },
+    identity: { type: 'string' },
     diagnostics: { type: 'string' },
     'stats-interval': { type: 'string', default: '5' },
     'video-idle-ms': { type: 'string', default: '5000' },
@@ -47,6 +52,7 @@ Usage: openmirror [options]
       --fullscreen           Open the video player fullscreen
       --mute                 Disable AAC-ELD audio output
       --advertise-address    Force the LAN IPv4 address published over mDNS
+      --identity <path>      Persistent receiver identity file
       --diagnostics <path>   Append redacted interoperability records as JSONL
       --stats-interval <s>   Diagnostic snapshot interval (default: 5, 0 = off)
       --video-idle-ms <ms>   Recycle a silent video player (default: 5000)
@@ -92,9 +98,23 @@ try {
   process.exit(2);
 }
 
+const configuredIdentity = values.identity ?? process.env.OPENMIRROR_IDENTITY;
+const identityPath = configuredIdentity
+  ? resolve(configuredIdentity)
+  : defaultReceiverIdentityPath();
+let receiverIdentity;
+try {
+  receiverIdentity = await loadOrCreateReceiverIdentity(identityPath);
+} catch (error) {
+  console.error(`openmirror: ${error.message}`);
+  process.exit(2);
+}
+
 const receiver = new AirPlayReceiver({
   name: values.name ?? process.env.OPENMIRROR_NAME ?? 'OpenMirror',
   port: options.port,
+  deviceId: receiverIdentity.deviceId,
+  privateKeySeed: receiverIdentity.privateKeySeed,
   videoIdleMs: options.videoIdleMs,
   mediaIdleMs: options.mediaIdleMs,
   addresses: values['advertise-address'] ? [values['advertise-address']] : undefined,
@@ -126,6 +146,7 @@ writeDiagnostic('run-start', {
   capabilityProfile: {
     featureMask: formatFeatures(receiver.options.features),
     pairing: 'legacy',
+    identity: 'persistent-v1',
     video: 'H264',
     audio: 'AAC-ELD',
   },
@@ -537,6 +558,7 @@ console.log(`OpenMirror receiver "${receiverName}" started`);
 console.log(`  control port : ${port}`);
 console.log(`  addresses    : ${addresses}`);
 console.log(`  device id    : ${receiver.options.deviceId}`);
+console.log(`  identity     : ${receiverIdentity.path}${receiverIdentity.created ? ' (created)' : ''}`);
 if (diagnosticsPath) console.log(`  diagnostics  : ${diagnosticsPath}`);
 console.log('On your iPhone/iPad: Control Center → Screen Mirroring — the device should appear.');
 console.log('Press Ctrl+C to stop.');

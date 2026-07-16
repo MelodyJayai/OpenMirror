@@ -232,7 +232,18 @@ test('analyzeInteroperabilityRecords enforces the complete true-device contract'
     counts: { videoAccessUnits: 0, audioPackets: 0, streamErrors: 0 },
   };
   const result = analyzeInteroperabilityRecords([
-    { type: 'run-start', runId: 'run-1' },
+    {
+      type: 'run-start',
+      runId: 'run-1',
+      schemaVersion: 1,
+      capabilityProfile: {
+        featureMask: '0x5A7FFEE6',
+        pairing: 'legacy',
+        identity: 'persistent-v1',
+        video: 'H264',
+        audio: 'AAC-ELD',
+      },
+    },
     {
       type: 'session-report',
       session: sessionOne,
@@ -254,7 +265,7 @@ test('analyzeInteroperabilityRecords enforces the complete true-device contract'
     },
   ]);
   assert.equal(result.passed, true);
-  assert.equal(result.checks.length, 10);
+  assert.equal(result.checks.length, 11);
 
   const incompleteSession = {
     ...base,
@@ -275,6 +286,7 @@ test('analyzeInteroperabilityRecords enforces the complete true-device contract'
   assert.deepEqual(
     incomplete.checks.filter((item) => !item.passed).map((item) => item.name),
     [
+      'capability-profile',
       'h264-decrypt-playback',
       'aac-eld-decrypt-playback',
       'rotation-format-change',

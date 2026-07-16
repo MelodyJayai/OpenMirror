@@ -530,6 +530,21 @@ function check(name, passed, detail) {
  */
 export function analyzeInteroperabilityRecords(records) {
   const runRecords = latestRunRecords(records);
+  const runStart = runRecords.find((record) => record?.type === 'run-start');
+  const capabilityProfile = runStart?.capabilityProfile;
+  const expectedCapabilityProfile = {
+    featureMask: '0x5A7FFEE6',
+    pairing: 'legacy',
+    identity: 'persistent-v1',
+    video: 'H264',
+    audio: 'AAC-ELD',
+  };
+  const capabilityProfileReady = Boolean(
+    runStart?.schemaVersion === 1
+    && Object.entries(expectedCapabilityProfile).every(
+      ([key, value]) => capabilityProfile?.[key] === value,
+    ),
+  );
   const sessions = collectSessions(runRecords);
   const manualVerification = [...runRecords].reverse().find(
     (record) => record?.type === 'manual-verification',
@@ -626,6 +641,15 @@ export function analyzeInteroperabilityRecords(records) {
   );
 
   const checks = [
+    check(
+      'capability-profile',
+      capabilityProfileReady,
+      capabilityProfileReady
+        ? `${capabilityProfile.featureMask}, ${capabilityProfile.identity},`
+          + ` ${capabilityProfile.video}/${capabilityProfile.audio}`
+        : 'Latest run does not prove the required legacy feature mask, persistent identity,'
+          + ' H.264 and AAC-ELD profile',
+    ),
     check(
       'report-completeness',
       completeFinalSnapshot,

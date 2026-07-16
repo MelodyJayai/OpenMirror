@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "build:playfair": "node tools/build-playfair-wasm.js",
-    "test": "node --test \"packages/core/test/*.test.js\" \"packages/media/test/*.test.js\"",
+    "test": "node --test \"apps/cli/test/*.test.js\" \"packages/core/test/*.test.js\" \"packages/media/test/*.test.js\"",
     "interop:report": "node tools/analyze-interoperability.js",
     "start": "node apps/cli/src/main.js"
   },

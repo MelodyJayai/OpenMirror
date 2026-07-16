@@ -7,6 +7,7 @@
 - iPhone/iPad 与接收端位于同一局域网，网络允许 mDNS（UDP 5353）和设备间 TCP/UDP 通信。
 - 接收器在 `_airplay._tcp`、`_raop._tcp` 与 `/info` 中统一使用经过真机验证的 legacy mirroring feature mask `0x5A7FFEE6`；不要为尚未实现的 HLS 或现代配对能力额外置位。
 - `_airplay` TXT 与 `/info` 必须返回同一个、由设备 ID 确定性生成的 UUID 格式 `pi`，并显式广播 `pw=false`；这可以避免 iOS 把同一接收器误判成未建立信任的新端点。
+- CLI 默认持久保存设备 ID 与 Ed25519 私有身份；连续两次启动应打印相同的 `device id`，且不应删除或共享身份文件。可用 `--identity <path>` 为隔离测试指定专用身份。
 - Node.js 20 或更高版本。
 - 已安装包含 `ffplay` 的 FFmpeg，并可从终端执行 `ffplay -version`。
 - 首次运行若 Windows/macOS 弹出防火墙提示，应允许当前局域网访问。
@@ -72,7 +73,7 @@ npm start -- --verbose --stats-interval 2 --diagnostics .openmirror-diagnostics/
 npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 ```
 
-只有完整且全部关闭的 `final-snapshot`、真实 PlayFair、H.264/AAC-ELD 管线证据与现场画面/声音确认、旋转、锁屏恢复、两次已清理媒体会话、RTP 指标、至少 30 秒时钟漂移统计以及零媒体/播放器错误全部满足时，验证器才返回 `PASS`。不带 `--confirm` 可重复分析已有报告，但报告中必须已经存在 `manual-verification`。
+只有 `run-start` 证明预期的 legacy feature mask、持久身份与 H.264/AAC-ELD 能力配置，并且完整且全部关闭的 `final-snapshot`、真实 PlayFair、H.264/AAC-ELD 管线证据与现场画面/声音确认、旋转、锁屏恢复、两次已清理媒体会话、RTP 指标、至少 30 秒时钟漂移统计以及零媒体/播放器错误全部满足时，验证器才返回 `PASS`。不带 `--confirm` 可重复分析已有报告，但报告中必须已经存在 `manual-verification`。
 
 ## 通过标准
 

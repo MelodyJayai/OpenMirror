@@ -49,9 +49,20 @@ export function x25519PublicFromRaw(raw32) {
  */
 export class DeviceIdentity {
   constructor({ privateKeySeed } = {}) {
-    if (privateKeySeed) {
+    if (privateKeySeed !== undefined) {
+      if (
+        (!Buffer.isBuffer(privateKeySeed) && !ArrayBuffer.isView(privateKeySeed))
+        || privateKeySeed.byteLength !== 32
+      ) {
+        throw new Error('privateKeySeed must contain exactly 32 bytes');
+      }
+      const seed = Buffer.from(
+        privateKeySeed.buffer,
+        privateKeySeed.byteOffset,
+        privateKeySeed.byteLength,
+      );
       this.privateKey = crypto.createPrivateKey({
-        key: Buffer.concat([ED25519_PKCS8_PREFIX, privateKeySeed]),
+        key: Buffer.concat([ED25519_PKCS8_PREFIX, seed]),
         format: 'der',
         type: 'pkcs8',
       });

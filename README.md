@@ -14,6 +14,8 @@ npm start          # 启动 CLI 接收器（mDNS 通告 + RTSP 服务）
 
 CLI 会为可解密的 H.264 镜像流启动 `ffplay` 视频窗口，并为 AAC-ELD 启动独立的低延迟音频解码进程；请先安装 FFmpeg（包含 ffplay）。服务器或 CI 环境可使用 `npm start -- --headless`，只关闭声音可使用 `--mute`，自定义路径可使用 `--ffplay <path>`。
 
+CLI 默认在当前用户的配置目录中持久保存设备 ID 与 Ed25519 配对身份，因此重启后仍向 iPhone/iPad 广播同一个接收器身份。需要隔离测试身份时可使用 `--identity <path>` 或 `OPENMIRROR_IDENTITY`；身份文件包含私有种子，不应提交、分享或放入公开同步目录。
+
 启动后，同一局域网内的 iPhone 打开控制中心 → 屏幕镜像，应能看到 `OpenMirror` 设备。
 
 真机回归时建议同时写入脱敏 JSONL 报告：
