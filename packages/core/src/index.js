@@ -18,7 +18,9 @@ import {
 import {
   H264StreamProcessor, MIRROR_PAYLOAD, isMirrorVideoSuspended,
 } from './stream/h264.js';
-import { AUDIO_PAYLOAD, RtpSequencer, parseAudioSyncPacket } from './stream/rtp.js';
+import {
+  AUDIO_PAYLOAD, RtpSequencer, parseAudioSyncPacket,
+} from './stream/rtp.js';
 import { AirPlayMediaClock } from './stream/timing.js';
 import { MediaActivityMonitor } from './stream/activity.js';
 
@@ -45,8 +47,10 @@ export {
   parameterSetsToAnnexB, hasKeyframe, MIRROR_VIDEO_OPTION, isMirrorVideoSuspended,
 } from './stream/h264.js';
 export {
-  parseRtpPacket, parseAudioSyncPacket, RtpSequencer, AUDIO_PAYLOAD,
-  RTP_HEADER_BYTES, AUDIO_SYNC_PACKET_BYTES,
+  parseRtpPacket, parseAudioSyncPacket, parseAudioRetransmitRequest,
+  parseRetransmittedAudioPacket, buildAudioRetransmitRequest,
+  RtpSequencer, AUDIO_PAYLOAD, RTP_HEADER_BYTES, AUDIO_SYNC_PACKET_BYTES,
+  AUDIO_RETRANSMIT_REQUEST_BYTES,
 } from './stream/rtp.js';
 export {
   ntpNow, ntpToUnixMs, ntpFixedToMs, decodeTimingPacket, encodeTimingPacket,
@@ -218,6 +222,12 @@ export class AirPlayReceiver extends EventEmitter {
         media.transport.configureTiming({
           address: ctx.session.remoteAddress.replace(/^::ffff:/, ''),
           port: payload.timingPort,
+        });
+      }
+      if (Number.isInteger(audioStream?.controlPort) && audioStream.controlPort > 0) {
+        media.transport.configureAudio({
+          address: ctx.session.remoteAddress.replace(/^::ffff:/, ''),
+          controlPort: audioStream.controlPort,
         });
       }
       const streams = requestedStreams.map((stream) => this.#setupStream(stream, media, state));
@@ -408,7 +418,23 @@ export class AirPlayReceiver extends EventEmitter {
         emitAudio(packet, timing);
       },
       {
-        onEvent: (event) => this.emit('audio-rtp-event', { ...event, session }),
+        onEvent: (event) => {
+          let sent = null;
+          if (event.type === 'retransmit-request') {
+            sent = transport.requestAudioRetransmit({
+              sequence: event.sequence,
+              count: event.count,
+            });
+            this.emit('audio-retransmit-request', {
+              sequence: event.sequence,
+              count: event.count,
+              attempt: event.attempt,
+              sent,
+              session,
+            });
+          }
+          this.emit('audio-rtp-event', { ...event, sent, session });
+        },
       },
     );
     media.audioSequencer = audioSequencer;
@@ -468,6 +494,17 @@ export class AirPlayReceiver extends EventEmitter {
         // Retransmit requests and other control packets share this UDP port.
       }
       this.emit('audio-control-packet', { ...packet, session });
+    });
+    transport.on('audio-retransmitted-packet', (packet) => {
+      this.emit('audio-retransmitted-packet', { ...packet, session });
+    });
+    transport.on('audio-retransmit-error', ({ error, ...event }) => {
+      this.emit('stream-error', {
+        error,
+        type: 'audio-retransmit',
+        session,
+      });
+      this.emit('audio-retransmit-error', { ...event, error, session });
     });
     transport.on('timing-sync', (sample) => {
       const clock = mediaClock.updateTimingReply(sample);

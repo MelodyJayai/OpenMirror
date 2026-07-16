@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from '../src/stream/mirror.js';
+import {
+  AUDIO_PAYLOAD,
+  parseAudioRetransmitRequest,
+} from '../src/stream/rtp.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 
 function packet(payload, {
@@ -117,6 +122,62 @@ test('MirrorTransport parses and acknowledges reverse HTTP event requests', asyn
     assert.equal(response.headers.cseq, '9');
   } finally {
     socket?.destroy();
+    await transport.close();
+  }
+});
+
+test('MirrorTransport requests and receives retransmitted audio over the control port', async () => {
+  const transport = new MirrorTransport();
+  const remote = dgram.createSocket('udp4');
+  await new Promise((resolve, reject) => {
+    remote.once('error', reject);
+    remote.bind(0, '127.0.0.1', resolve);
+  });
+  const ports = await transport.start('127.0.0.1');
+
+  try {
+    assert.equal(
+      transport.requestAudioRetransmit({ sequence: 1, count: 1 }),
+      false,
+    );
+    transport.configureAudio({
+      address: '127.0.0.1',
+      controlPort: remote.address().port,
+    });
+    const requestReceived = new Promise((resolve) => remote.once('message', (...args) => resolve(args)));
+    assert.equal(transport.requestAudioRetransmit({ sequence: 42, count: 2 }), true);
+    const [request, requestRemote] = await requestReceived;
+    assert.deepEqual(parseAudioRetransmitRequest(request), {
+      version: 2,
+      marker: true,
+      payloadType: AUDIO_PAYLOAD.RETRANSMIT_REQUEST,
+      requestSequence: 0,
+      sequence: 42,
+      count: 2,
+    });
+    assert.equal(requestRemote.port, ports.audioControlPort);
+
+    const inner = Buffer.alloc(12 + 3);
+    inner[0] = 0x80;
+    inner[1] = AUDIO_PAYLOAD.DATA;
+    inner.writeUInt16BE(42, 2);
+    inner.writeUInt32BE(480, 4);
+    inner.writeUInt32BE(1, 8);
+    Buffer.from([0x70, 1, 2]).copy(inner, 12);
+    const response = Buffer.concat([
+      Buffer.from([0x80, 0x80 | AUDIO_PAYLOAD.RETRANSMITTED, 0, 0]),
+      inner,
+    ]);
+    const recovered = new Promise((resolve) => {
+      transport.once('audio-retransmitted-packet', resolve);
+    });
+    remote.send(response, ports.audioControlPort, '127.0.0.1');
+    const packet = await recovered;
+    assert.equal(packet.sequence, 42);
+    assert.equal(packet.retransmitted, true);
+    assert.deepEqual(packet.payload, Buffer.from([0x70, 1, 2]));
+  } finally {
+    remote.close();
     await transport.close();
   }
 });

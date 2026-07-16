@@ -5,7 +5,12 @@ import {
   buildTimingReply, buildTimingRequest, decodeTimingPacket, ntpNow,
   timingReplySample, TIMING_REPLY,
 } from './timing.js';
-import { parseRtpPacket } from './rtp.js';
+import {
+  AUDIO_PAYLOAD,
+  buildAudioRetransmitRequest,
+  parseRetransmittedAudioPacket,
+  parseRtpPacket,
+} from './rtp.js';
 import { RtspParser, encodeResponse } from '../rtsp/parser.js';
 
 export const MIRROR_HEADER_BYTES = 128;
@@ -87,6 +92,8 @@ export class MirrorTransport extends EventEmitter {
   #timingSocket = null;
   #audioSocket = null;
   #audioControlSocket = null;
+  #audioRemote = null;
+  #audioRetransmitSequence = 0;
   #timingRemote = null;
   #timingTimer = null;
   #timingSequence = 0;
@@ -157,7 +164,36 @@ export class MirrorTransport extends EventEmitter {
 
     this.#audioControlSocket = dgram.createSocket('udp4');
     this.#audioControlSocket.on('message', (message, remote) => {
-      this.emit('audio-control-packet', { message, remote, receivedAtMs: Date.now() });
+      const receivedAtMs = Date.now();
+      const payloadType = message.length >= 2 ? message[1] & 0x7f : null;
+      if (payloadType === AUDIO_PAYLOAD.RETRANSMITTED) {
+        try {
+          if (this.#audioRemote && remote.address !== this.#audioRemote.address) {
+            throw new Error('retransmitted audio packet came from an unexpected address');
+          }
+          const packet = {
+            ...parseRetransmittedAudioPacket(message),
+            raw: message,
+            remote,
+            receivedAtMs,
+          };
+          this.emit('audio-retransmitted-packet', packet);
+          this.emit('audio-packet', packet);
+        } catch (error) {
+          this.emit('invalid-audio-packet', {
+            error,
+            message,
+            remote,
+            channel: 'control',
+          });
+        }
+      }
+      this.emit('audio-control-packet', {
+        message,
+        remote,
+        receivedAtMs,
+        payloadType,
+      });
     });
     this.#audioControlSocket.on('error', (error) => this.emit('error', error));
 
@@ -189,11 +225,57 @@ export class MirrorTransport extends EventEmitter {
     this.#timingTimer.unref?.();
   }
 
+  /** Configure the sender UDP control endpoint used for 0x55 retransmit requests. */
+  configureAudio({ address, controlPort }) {
+    if (!this.#audioControlSocket) throw new Error('Mirror transport is not started');
+    if (typeof address !== 'string' || !address) throw new Error('audio address is required');
+    if (!Number.isInteger(controlPort) || controlPort < 1 || controlPort > 65535) {
+      throw new Error('invalid audio control port');
+    }
+    this.#audioRemote = { address, port: controlPort };
+    this.#audioRetransmitSequence = 0;
+  }
+
+  /**
+   * Request a bounded contiguous RTP range from the sender.
+   * Returns false when SETUP did not advertise a remote controlPort.
+   */
+  requestAudioRetransmit({ sequence, count = 1 }) {
+    const remote = this.#audioRemote;
+    if (!remote || !this.#audioControlSocket) return false;
+    const requestSequence = this.#audioRetransmitSequence++ & 0xffff;
+    const message = buildAudioRetransmitRequest({
+      requestSequence,
+      sequence,
+      count,
+    });
+    this.#audioControlSocket.send(message, remote.port, remote.address, (error) => {
+      if (error) {
+        this.emit('audio-retransmit-error', {
+          error,
+          requestSequence,
+          sequence,
+          count,
+          remote,
+        });
+      }
+    });
+    this.emit('audio-retransmit-request', {
+      requestSequence,
+      sequence,
+      count,
+      remote,
+    });
+    return true;
+  }
+
   async close() {
     clearInterval(this.#timingTimer);
     this.#timingTimer = null;
     this.#timingRemote = null;
     this.#timingOrigins.clear();
+    this.#audioRemote = null;
+    this.#audioRetransmitSequence = 0;
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
     this.#videoSockets.clear();

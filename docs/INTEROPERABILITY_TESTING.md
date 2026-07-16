@@ -79,7 +79,8 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 - AAC-ELD 有解密后的音频包，`encryptedAudioPackets` 为 0，有 `playback.audio.forwarded` 计数，并现场确认声音可闻。
 - 旋转后 `videoFormat.width/height/orientation/revision` 更新，播放自动恢复。
 - FLUSH、锁屏静默、异常 RTSP 断开和主动 TEARDOWN 均会回收播放器；重连产生同一匿名 peer 的递增 `reconnectIndex`。
-- `streamErrors` 不持续增长；RTP `gapsSkipped`、延迟 p95、A/V 偏差和 drift ppm 应结合实际网络记录并用于后续调优。
+- `streamErrors` 不持续增长；RTP 报告包含乱序/重复/迟到/最终缺口，以及 `retransmitRequests`、`retransmittedReceived`、`retransmittedRecovered` 和实际控制报文发送统计。弱网出现丢包时应优先由 `0x55/0x56` 重传恢复，`gapsSkipped`/`retransmitUnrecovered` 不应持续增长。
+- 延迟 p95、A/V 偏差和 drift ppm 应结合实际网络记录并用于后续调优。
 
 ## 诊断数据说明
 

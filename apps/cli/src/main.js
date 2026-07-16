@@ -133,11 +133,16 @@ diagnostics.on('snapshot', (snapshot) => {
   for (const session of snapshot.sessions.filter((item) => item.closedAt === null)) {
     const rtp = session.rtp;
     const loss = rtp ? `${rtp.gapsSkipped}/${rtp.received}` : '-';
+    const recovery = rtp
+      ? `${rtp.retransmitRecovered}/${rtp.retransmitPacketsRequested}`
+        + ` (${rtp.retransmittedRecovered} resent)`
+      : '-';
     console.log(
       `[stats] ${session.id} stage=${session.stage}`
       + ` video=${session.counts.videoAccessUnits}`
       + ` audio=${session.counts.audioPackets}`
       + ` rtp-gap=${loss}`
+      + ` rtp-recovery=${recovery}`
       + ` v/a=${statValue(session.latencyMs.video)}/${statValue(session.latencyMs.audio)}ms`
       + ` av=${statValue(session.latencyMs.audioMinusVideo)}ms`
       + ` drift=${statValue(session.clock.drift, 'ppm')}ppm`,
@@ -337,7 +342,8 @@ receiver.on('setup', ({ session, ports, payload, crypto }) => {
   if (audio && values.verbose) {
     console.log(
       `[setup] audio ct=${audio.ct ?? 'unknown'}`
-      + ` sr=${audio.sr ?? 44100} spf=${audio.spf ?? 'unknown'}`,
+      + ` sr=${audio.sr ?? 44100} spf=${audio.spf ?? 'unknown'}`
+      + ` retransmit=${audio.controlPort > 0 ? 'ready' : 'unavailable'}`,
     );
   }
 });
@@ -433,6 +439,25 @@ receiver.on('audio-rtp-event', ({ session, type, skipped, sequence }) => {
       + `${skipped ? ` skipped=${skipped}` : ''}`
       + `${sequence !== undefined ? ` seq=${sequence}` : ''}`,
     );
+  }
+});
+receiver.on('audio-retransmit-request', ({
+  session,
+  sequence,
+  count,
+  attempt,
+  sent,
+}) => {
+  if (values.verbose) {
+    console.warn(
+      `[rtp] ${session.remoteAddress} retransmit seq=${sequence}`
+      + ` count=${count} attempt=${attempt}${sent ? '' : ' (sender controlPort unavailable)'}`,
+    );
+  }
+});
+receiver.on('audio-retransmitted-packet', ({ session, sequence }) => {
+  if (values.verbose) {
+    console.log(`[rtp] ${session.remoteAddress} recovered seq=${sequence}`);
   }
 });
 receiver.on('clock-sync', ({ session, clock }) => {

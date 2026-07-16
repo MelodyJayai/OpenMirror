@@ -2,7 +2,7 @@
 
 开源、跨平台的无线投屏**接收端**软件（对标 AirServer）。把你的 Windows / macOS / Linux 电脑变成投屏接收器：iPhone/iPad 通过系统自带的"屏幕镜像"（AirPlay）、Android/Chrome 通过 Google Cast，即可把画面无线投到这台电脑上。
 
-> 状态：早期开发中。当前已实现 mDNS 服务发现、RTSP 控制通道、二进制 plist 编解码、AirPlay legacy 配对、真实 PlayFair/SAPv2.5 媒体密钥解包及 pair-verify 密钥绑定、镜像 TCP/音频 RTP 接收、主动 NTP timing 校时、音频 RTP↔NTP 锚定、反向 HTTP 事件通道、H.264 Annex-B 转换与 SPS 分辨率/方向识别，以及 AAC-ELD→RFC 3640 RTP→ffplay 解码/输出。音视频使用同一远端时钟安排呈现；接收器还提供 RTP 丢包/重排、延迟、A/V 偏差和时钟漂移统计，并能在 FLUSH、锁屏静默、旋转、RTSP 异常断开与重新连接时回收/重建播放器。详见 [真机互操作回归](docs/INTEROPERABILITY_TESTING.md)和[开发计划](docs/DEVELOPMENT_PLAN.md)。
+> 状态：早期开发中。当前已实现 mDNS 服务发现、RTSP 控制通道、二进制 plist 编解码、AirPlay legacy 配对、真实 PlayFair/SAPv2.5 媒体密钥解包及 pair-verify 密钥绑定、镜像 TCP/音频 RTP 接收、AAC 音频 `0x55/0x56` 丢包重传、主动 NTP timing 校时、音频 RTP↔NTP 锚定、反向 HTTP 事件通道、H.264 Annex-B 转换与 SPS/codec 头分辨率和方向识别，以及 AAC-ELD→RFC 3640 RTP→ffplay 解码/输出。音视频使用同一远端时钟安排呈现；接收器还提供 RTP 丢包/重排/重传恢复、延迟、A/V 偏差和时钟漂移统计，并能在 FLUSH、锁屏静默、旋转、RTSP 异常断开与重新连接时回收/重建播放器。详见 [真机互操作回归](docs/INTEROPERABILITY_TESTING.md)和[开发计划](docs/DEVELOPMENT_PLAN.md)。
 
 ## 快速开始
 

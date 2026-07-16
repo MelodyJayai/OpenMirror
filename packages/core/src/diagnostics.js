@@ -157,6 +157,9 @@ export class AirPlayDiagnostics extends EventEmitter {
           audioFormat: audio.audioFormat ?? record.audioFormat?.audioFormat ?? null,
           sampleRate: audio.sr ?? record.audioFormat?.sampleRate ?? 44100,
           samplesPerFrame: audio.spf ?? record.audioFormat?.samplesPerFrame ?? null,
+          retransmitAvailable: Number.isInteger(audio.controlPort)
+            ? audio.controlPort > 0
+            : record.audioFormat?.retransmitAvailable ?? false,
         };
       }
       record.crypto = {
@@ -239,6 +242,20 @@ export class AirPlayDiagnostics extends EventEmitter {
     });
     this.#listen('audio-rtp-stats', ({ session, stats }) => {
       this.#recordFor(session).rtp = { ...stats };
+    });
+    this.#listen('audio-retransmit-request', ({
+      session,
+      count = 0,
+      sent = false,
+    }) => {
+      const recovery = this.#recordFor(session).rtpRecovery;
+      recovery.logicalRequests++;
+      recovery.packetsRequested += count;
+      if (sent) recovery.datagramsSent++;
+      else recovery.unavailable++;
+    });
+    this.#listen('audio-retransmitted-packet', ({ session }) => {
+      this.#recordFor(session).rtpRecovery.packetsReceived++;
     });
     this.#listen('clock-sync', ({ session, clock }) => {
       const record = this.#recordFor(session);
@@ -347,6 +364,13 @@ export class AirPlayDiagnostics extends EventEmitter {
         audio: { reasons: {} },
       },
       rtp: null,
+      rtpRecovery: {
+        logicalRequests: 0,
+        packetsRequested: 0,
+        datagramsSent: 0,
+        unavailable: 0,
+        packetsReceived: 0,
+      },
       latency: {
         video: new RunningStats(),
         audio: new RunningStats(),
@@ -440,7 +464,10 @@ export class AirPlayDiagnostics extends EventEmitter {
           { ...value, reasons: { ...value.reasons } },
         ]),
       ),
-      rtp: record.rtp ? { ...record.rtp } : null,
+      rtp: record.rtp ? {
+        ...record.rtp,
+        transport: { ...record.rtpRecovery },
+      } : null,
       latencyMs: {
         video: record.latency.video.snapshot(),
         audio: record.latency.audio.snapshot(),
@@ -576,6 +603,12 @@ export function analyzeInteroperabilityRecords(records) {
     && Number.isFinite(session.rtp?.gapsSkipped)
     && Number.isFinite(session.rtp?.duplicates)
     && Number.isFinite(session.rtp?.late)
+    && Number.isFinite(session.rtp?.retransmitRequests)
+    && Number.isFinite(session.rtp?.retransmitRecovered)
+    && Number.isFinite(session.rtp?.retransmitUnrecovered)
+    && Number.isFinite(session.rtp?.retransmittedRecovered)
+    && Number.isFinite(session.rtp?.transport?.datagramsSent)
+    && Number.isFinite(session.rtp?.transport?.packetsReceived)
   ));
   const totalStreamErrors = sessions.reduce(
     (total, session) => total + (session.counts?.streamErrors ?? 0),
@@ -659,8 +692,10 @@ export function analyzeInteroperabilityRecords(records) {
       'rtp-loss-statistics',
       rtpSession,
       rtpSession
-        ? `${rtpSession.id}: ${rtpSession.rtp.received} packets, ${rtpSession.rtp.gapsSkipped} gaps`
-        : 'Missing RTP received/gap/duplicate/late statistics',
+        ? `${rtpSession.id}: ${rtpSession.rtp.received} packets,`
+          + ` ${rtpSession.rtp.gapsSkipped} gaps,`
+          + ` ${rtpSession.rtp.retransmittedRecovered} retransmit recovery`
+        : 'Missing RTP loss/reorder/retransmit statistics',
     ),
     check(
       'pipeline-stability',

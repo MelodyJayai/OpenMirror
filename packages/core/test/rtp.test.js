@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseRtpPacket, parseAudioSyncPacket, RtpSequencer, AUDIO_PAYLOAD,
+  buildAudioRetransmitRequest,
+  parseAudioRetransmitRequest,
+  parseRetransmittedAudioPacket,
+  parseRtpPacket,
+  parseAudioSyncPacket,
+  RtpSequencer,
+  AUDIO_PAYLOAD,
 } from '../src/stream/rtp.js';
 
 function rtp({ payloadType = AUDIO_PAYLOAD.DATA, sequence = 0, timestamp = 0, ssrc = 1, marker = false, payload = Buffer.alloc(0) } = {}) {
@@ -60,6 +66,41 @@ test('parseAudioSyncPacket extracts the RTP to remote-NTP anchor', () => {
   assert.throws(() => parseAudioSyncPacket(packet), /not an AirPlay audio sync/);
 });
 
+test('audio retransmit request and response packets match AirPlay control framing', () => {
+  const request = buildAudioRetransmitRequest({
+    requestSequence: 7,
+    sequence: 0xfffe,
+    count: 3,
+  });
+  assert.deepEqual(parseAudioRetransmitRequest(request), {
+    version: 2,
+    marker: true,
+    payloadType: AUDIO_PAYLOAD.RETRANSMIT_REQUEST,
+    requestSequence: 7,
+    sequence: 0xfffe,
+    count: 3,
+  });
+
+  const inner = rtp({
+    sequence: 0xffff,
+    timestamp: 88200,
+    payload: Buffer.from([0x70, 1, 2]),
+  });
+  const response = Buffer.concat([
+    Buffer.from([0x80, 0x80 | AUDIO_PAYLOAD.RETRANSMITTED, 0, 7]),
+    inner,
+  ]);
+  const packet = parseRetransmittedAudioPacket(response);
+  assert.equal(packet.retransmitted, true);
+  assert.equal(packet.retransmitSequence, 7);
+  assert.equal(packet.sequence, 0xffff);
+  assert.deepEqual(packet.payload, Buffer.from([0x70, 1, 2]));
+  assert.throws(
+    () => parseRetransmittedAudioPacket(Buffer.alloc(8)),
+    /at least 16/,
+  );
+});
+
 test('RtpSequencer reorders out-of-order packets and drops stale ones', () => {
   const out = [];
   const seq = new RtpSequencer((p) => out.push(p.sequence));
@@ -102,12 +143,22 @@ test('RtpSequencer skips ahead when a gap never fills', () => {
     reordered: 4,
     gapsSkipped: 1,
     maxPending: 4,
+    discontinuities: 0,
+    retransmitRequests: 1,
+    retransmitPacketsRequested: 1,
+    retransmitRecovered: 0,
+    retransmitUnrecovered: 1,
+    retransmittedReceived: 0,
+    retransmittedRecovered: 0,
+    retransmittedLate: 0,
+    retransmittedDuplicates: 0,
     pending: 0,
+    missing: 0,
     nextSequence: 7,
   });
-  assert.equal(events.length, 1);
-  assert.equal(events[0].type, 'gap');
-  assert.equal(events[0].skipped, 1);
+  assert.equal(events[0].type, 'retransmit-request');
+  assert.equal(events.at(-1).type, 'gap');
+  assert.equal(events.at(-1).skipped, 1);
 });
 
 test('RtpSequencer reports duplicate and late packets and resets buffered state', () => {
@@ -143,7 +194,89 @@ test('RtpSequencer reports duplicate and late packets and resets buffered state'
     reordered: 0,
     gapsSkipped: 0,
     maxPending: 0,
+    discontinuities: 0,
+    retransmitRequests: 0,
+    retransmitPacketsRequested: 0,
+    retransmitRecovered: 0,
+    retransmitUnrecovered: 0,
+    retransmittedReceived: 0,
+    retransmittedRecovered: 0,
+    retransmittedLate: 0,
+    retransmittedDuplicates: 0,
     pending: 0,
+    missing: 0,
     nextSequence: null,
   });
+});
+
+test('RtpSequencer requests, retries, and accounts for retransmitted recovery', () => {
+  const out = [];
+  const events = [];
+  const seq = new RtpSequencer((packet) => out.push(packet.sequence), {
+    retransmitIntervalPackets: 2,
+    maxRetransmitAttempts: 2,
+    onEvent: (event) => events.push(event),
+  });
+
+  seq.push({ sequence: 10 });
+  seq.push({ sequence: 12 });
+  assert.deepEqual(
+    events.filter((event) => event.type === 'retransmit-request')
+      .map(({ sequence, count, attempt }) => ({ sequence, count, attempt })),
+    [{ sequence: 11, count: 1, attempt: 1 }],
+  );
+  seq.push({ sequence: 13 });
+  seq.push({ sequence: 14 });
+  assert.equal(
+    events.filter((event) => event.type === 'retransmit-request').length,
+    2,
+  );
+  seq.push({ sequence: 15 });
+  seq.push({ sequence: 16 });
+  assert.equal(
+    events.filter((event) => event.type === 'retransmit-request').length,
+    2,
+    'retry attempts are bounded while the gap remains unresolved',
+  );
+  seq.push({ sequence: 11, retransmitted: true });
+  assert.deepEqual(out, [10, 11, 12, 13, 14, 15, 16]);
+  assert.equal(seq.stats.retransmitRecovered, 1);
+  assert.equal(seq.stats.retransmittedReceived, 1);
+  assert.equal(seq.stats.retransmittedRecovered, 1);
+  assert.equal(seq.stats.retransmitUnrecovered, 0);
+  assert.equal(seq.stats.missing, 0);
+});
+
+test('RtpSequencer resynchronizes a large sequence discontinuity', () => {
+  const out = [];
+  const events = [];
+  const seq = new RtpSequencer((packet) => out.push(packet.sequence), {
+    depth: 4,
+    maxGapDistance: 16,
+    onEvent: (event) => events.push(event),
+  });
+  seq.push({ sequence: 1 });
+  seq.push({ sequence: 1000 });
+  assert.deepEqual(out, [1, 1000]);
+  assert.equal(seq.stats.discontinuities, 1);
+  assert.equal(seq.stats.gapsSkipped, 998);
+  assert.equal(events.at(-1).type, 'discontinuity');
+});
+
+test('RtpSequencer batches missing ranges across 16-bit wraparound', () => {
+  const events = [];
+  const seq = new RtpSequencer(() => {}, {
+    maxRetransmitBatch: 2,
+    onEvent: (event) => events.push(event),
+  });
+  seq.push({ sequence: 0xfffe });
+  seq.push({ sequence: 2 });
+  assert.deepEqual(
+    events.filter((event) => event.type === 'retransmit-request')
+      .map(({ sequence, count }) => ({ sequence, count })),
+    [
+      { sequence: 0xffff, count: 2 },
+      { sequence: 1, count: 1 },
+    ],
+  );
 });

@@ -31,7 +31,13 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
     },
     payload: {
       ekey: Buffer.alloc(72, 0xbb),
-      streams: [{ type: 96, ct: 4, sr: 44100, spf: 480 }],
+      streams: [{
+        type: 96,
+        ct: 4,
+        sr: 44100,
+        spf: 480,
+        controlPort: 6001,
+      }],
     },
   });
   receiver.emit('setup', {
@@ -71,8 +77,25 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
   });
   receiver.emit('audio-rtp-event', {
     session,
-    stats: { received: 2, emitted: 1, gapsSkipped: 1, pending: 0 },
+    stats: {
+      received: 2,
+      emitted: 1,
+      gapsSkipped: 1,
+      duplicates: 0,
+      late: 0,
+      retransmitRequests: 1,
+      retransmitRecovered: 1,
+      retransmitUnrecovered: 0,
+      retransmittedRecovered: 1,
+      pending: 0,
+    },
   });
+  receiver.emit('audio-retransmit-request', {
+    session,
+    count: 1,
+    sent: true,
+  });
+  receiver.emit('audio-retransmitted-packet', { session, sequence: 2 });
   receiver.emit('clock-sync', {
     session,
     clock: { offsetMs: 10, roundTripMs: 2 },
@@ -101,11 +124,14 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
   assert.equal(item.crypto.videoDecryptorReady, true);
   assert.deepEqual(item.streamTypes, [96, 110]);
   assert.equal(item.audioFormat.compressionType, 4);
+  assert.equal(item.audioFormat.retransmitAvailable, true);
   assert.equal(item.counts.videoBytes, 100);
   assert.equal(item.counts.audioBytes, 20);
   assert.equal(item.latencyMs.audioMinusVideo.mean, 5);
   assert.equal(item.clock.drift.driftMs, 0.09999999999999964);
   assert.equal(item.rtp.gapsSkipped, 1);
+  assert.equal(item.rtp.transport.datagramsSent, 1);
+  assert.equal(item.rtp.transport.packetsReceived, 1);
   assert.doesNotMatch(json, /192\.168\.10\.44/);
   assert.doesNotMatch(json, /fe80|abcd|7000/);
   assert.doesNotMatch(json, /aaaa|bbbb/);
@@ -166,6 +192,14 @@ test('analyzeInteroperabilityRecords enforces the complete true-device contract'
       gapsSkipped: 1,
       duplicates: 2,
       late: 3,
+      retransmitRequests: 1,
+      retransmitRecovered: 1,
+      retransmitUnrecovered: 0,
+      retransmittedRecovered: 1,
+      transport: {
+        datagramsSent: 1,
+        packetsReceived: 1,
+      },
     },
     timeline: [
       { event: 'video-idle', elapsedMs: 30_000, reason: 'timeout' },
