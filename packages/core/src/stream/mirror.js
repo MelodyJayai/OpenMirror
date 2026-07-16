@@ -11,6 +11,29 @@ import { RtspParser, encodeResponse } from '../rtsp/parser.js';
 export const MIRROR_HEADER_BYTES = 128;
 export const DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024;
 
+function dimensionPair(header, widthOffset, heightOffset) {
+  const width = header.readFloatLE(widthOffset);
+  const height = header.readFloatLE(heightOffset);
+  if (
+    !Number.isFinite(width) || !Number.isFinite(height)
+    || width <= 0 || height <= 0
+    || width > 32768 || height > 32768
+  ) {
+    return null;
+  }
+  return {
+    width: Math.round(width),
+    height: Math.round(height),
+    orientation: width === height ? 'square' : width > height ? 'landscape' : 'portrait',
+  };
+}
+
+function mirrorDisplayDimensions(header) {
+  const source = dimensionPair(header, 40, 44) ?? dimensionPair(header, 16, 20);
+  const encoded = dimensionPair(header, 56, 60);
+  return source || encoded ? { source, encoded } : null;
+}
+
 // Incremental parser for the AirPlay mirroring TCP framing. The encrypted or
 // clear payload is deliberately left untouched; FairPlay belongs above this
 // transport boundary.
@@ -43,8 +66,14 @@ export class MirrorFrameParser {
       this.#buffer = this.#buffer.subarray(total);
       this.#onFrame({
         payloadLength,
-        type: header.readUInt16LE(4),
+        // AirPlay uses byte 4 for the payload type and byte 5 for flags.
+        // In particular, an IDR video packet is commonly encoded as 00 10.
+        type: header[4],
+        payloadFlags: header[5],
+        payloadOption: header.readUInt16LE(6),
+        rawTypeAndFlags: header.readUInt16LE(4),
         timestamp: header.readBigUInt64LE(8),
+        displayDimensions: mirrorDisplayDimensions(header),
         header,
         payload,
       });
@@ -63,6 +92,8 @@ export class MirrorTransport extends EventEmitter {
   #timingSequence = 0;
   #timingOrigins = new Set();
   #sockets = new Set();
+  #videoSockets = new Set();
+  #eventSockets = new Set();
   #maxFrameBytes;
   #clock;
   #timingIntervalMs;
@@ -165,6 +196,8 @@ export class MirrorTransport extends EventEmitter {
     this.#timingOrigins.clear();
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
+    this.#videoSockets.clear();
+    this.#eventSockets.clear();
     const closers = [
       closeTcp(this.#videoServer),
       closeTcp(this.#eventServer),
@@ -201,6 +234,14 @@ export class MirrorTransport extends EventEmitter {
 
   #acceptVideo(socket) {
     this.#track(socket);
+    this.#videoSockets.add(socket);
+    socket.once('close', () => {
+      this.#videoSockets.delete(socket);
+      this.emit('video-disconnection', {
+        socket,
+        activeConnections: this.#videoSockets.size,
+      });
+    });
     const parser = new MirrorFrameParser(
       (frame) => this.emit('video-frame', { ...frame, socket }),
       { maxFrameBytes: this.#maxFrameBytes },
@@ -213,11 +254,22 @@ export class MirrorTransport extends EventEmitter {
         socket.destroy();
       }
     });
-    this.emit('video-connection', socket);
+    this.emit('video-connection', {
+      socket,
+      activeConnections: this.#videoSockets.size,
+    });
   }
 
   #acceptEvent(socket) {
     this.#track(socket);
+    this.#eventSockets.add(socket);
+    socket.once('close', () => {
+      this.#eventSockets.delete(socket);
+      this.emit('event-disconnection', {
+        socket,
+        activeConnections: this.#eventSockets.size,
+      });
+    });
     const parser = new RtspParser((message) => {
       if (message.kind === 'request') {
         this.emit('event-request', { ...message, socket });
@@ -239,7 +291,10 @@ export class MirrorTransport extends EventEmitter {
         }
       }
     });
-    this.emit('event-connection', socket);
+    this.emit('event-connection', {
+      socket,
+      activeConnections: this.#eventSockets.size,
+    });
   }
 }
 

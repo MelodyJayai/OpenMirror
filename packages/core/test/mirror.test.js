@@ -4,11 +4,28 @@ import net from 'node:net';
 import { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from '../src/stream/mirror.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 
-function packet(payload, { type = 0, timestamp = 0n } = {}) {
+function packet(payload, {
+  type = 0,
+  flags = 0,
+  option = 0,
+  timestamp = 0n,
+  sourceDimensions = null,
+  encodedDimensions = null,
+} = {}) {
   const header = Buffer.alloc(MIRROR_HEADER_BYTES);
   header.writeUInt32LE(payload.length, 0);
-  header.writeUInt16LE(type, 4);
+  header[4] = type;
+  header[5] = flags;
+  header.writeUInt16LE(option, 6);
   header.writeBigUInt64LE(timestamp, 8);
+  if (sourceDimensions) {
+    header.writeFloatLE(sourceDimensions.width, 40);
+    header.writeFloatLE(sourceDimensions.height, 44);
+  }
+  if (encodedDimensions) {
+    header.writeFloatLE(encodedDimensions.width, 56);
+    header.writeFloatLE(encodedDimensions.height, 60);
+  }
   return Buffer.concat([header, payload]);
 }
 
@@ -16,8 +33,13 @@ test('MirrorFrameParser handles fragmented and pipelined frames', () => {
   const frames = [];
   const parser = new MirrorFrameParser((frame) => frames.push(frame));
   const bytes = Buffer.concat([
-    packet(Buffer.from('one'), { type: 1, timestamp: 42n }),
-    packet(Buffer.from('two'), { type: 0, timestamp: 43n }),
+    packet(Buffer.from('one'), {
+      type: 1,
+      timestamp: 42n,
+      sourceDimensions: { width: 640, height: 360 },
+      encodedDimensions: { width: 1280, height: 720 },
+    }),
+    packet(Buffer.from('two'), { type: 0, flags: 0x10, option: 0x0116, timestamp: 43n }),
   ]);
   parser.push(bytes.subarray(0, 17));
   parser.push(bytes.subarray(17));
@@ -25,6 +47,13 @@ test('MirrorFrameParser handles fragmented and pipelined frames', () => {
     [1, 42n, 'one'],
     [0, 43n, 'two'],
   ]);
+  assert.equal(frames[1].payloadFlags, 0x10);
+  assert.equal(frames[1].payloadOption, 0x0116);
+  assert.equal(frames[1].rawTypeAndFlags, 0x1000);
+  assert.deepEqual(frames[0].displayDimensions, {
+    source: { width: 640, height: 360, orientation: 'landscape' },
+    encoded: { width: 1280, height: 720, orientation: 'landscape' },
+  });
 });
 
 test('MirrorFrameParser rejects unreasonable payload sizes', () => {

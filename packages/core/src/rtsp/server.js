@@ -10,6 +10,7 @@ export class RtspServer extends EventEmitter {
   #server = null;
   #handlers = new Map();
   #sessions = new Set();
+  #nextSessionId = 1;
 
   /**
    * Register a handler. handle(method, handler) matches any URI for that
@@ -48,8 +49,10 @@ export class RtspServer extends EventEmitter {
   #onConnection(socket) {
     this.#sessions.add(socket);
     const session = {
+      id: this.#nextSessionId++,
       remoteAddress: socket.remoteAddress,
       localAddress: socket.localAddress,
+      openedAt: Date.now(),
       state: {},
     };
     const ctx = {
@@ -90,7 +93,15 @@ export class RtspServer extends EventEmitter {
     const key = `${request.method.toUpperCase()} ${path}`;
     const handler = this.#handlers.get(key) ?? this.#handlers.get(request.method.toUpperCase());
 
-    this.emit('request', { method: request.method, uri: request.uri, session: ctx.session });
+    this.emit('request', {
+      method: request.method,
+      uri: request.uri,
+      bodyBytes: request.body?.length ?? 0,
+      contentType: request.headers['content-type'] ?? null,
+      cseq: request.headers['cseq'] ?? null,
+      userAgent: request.headers['user-agent'] ?? null,
+      session: ctx.session,
+    });
 
     let response;
     if (!handler) {

@@ -15,12 +15,25 @@ const MDNS_PORT = 5353;
 const DEFAULT_TTL = 4500; // seconds, per RFC 6762 §10 for shared records
 const HOST_TTL = 120;
 
+/** Exclude IPv4 ranges that cannot represent a reachable LAN receiver. */
+export function isUsableLanIPv4(address) {
+  const octets = String(address).split('.').map(Number);
+  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    return false;
+  }
+  const [a, b] = octets;
+  if (a === 0 || a === 127 || a >= 224) return false;
+  // RFC 2544 benchmarking space is commonly assigned to VPN/agent adapters.
+  if (a === 198 && (b === 18 || b === 19)) return false;
+  return true;
+}
+
 /** Enumerate non-internal IPv4 addresses, one per interface. */
 export function localIPv4Addresses() {
   const result = [];
   for (const [iface, addrs] of Object.entries(os.networkInterfaces())) {
     for (const addr of addrs ?? []) {
-      if (addr.family === 'IPv4' && !addr.internal) {
+      if (addr.family === 'IPv4' && !addr.internal && isUsableLanIPv4(addr.address)) {
         result.push({ iface, address: addr.address });
       }
     }
@@ -70,13 +83,14 @@ export class MdnsResponder extends EventEmitter {
       this.#socket.once('error', reject);
       this.#socket.bind(MDNS_PORT, () => {
         this.#socket.removeListener('error', reject);
+        const addresses = this.#addressList();
         try {
           this.#socket.addMembership(MDNS_ADDRESS);
         } catch {
           // Membership on the default interface may fail on multi-homed hosts;
           // join per-interface below instead.
         }
-        for (const { address } of localIPv4Addresses()) {
+        for (const address of addresses) {
           try {
             this.#socket.addMembership(MDNS_ADDRESS, address);
           } catch {
@@ -85,6 +99,7 @@ export class MdnsResponder extends EventEmitter {
         }
         this.#socket.setMulticastTTL(255);
         this.#socket.setMulticastLoopback(true);
+        if (addresses.length) this.#socket.setMulticastInterface(addresses[0]);
         resolve();
       });
     });
@@ -125,10 +140,15 @@ export class MdnsResponder extends EventEmitter {
   }
 
   #hostRecords(ttl = HOST_TTL) {
-    const addrs = this.#addresses ?? localIPv4Addresses().map((a) => a.address);
+    const addrs = this.#addressList();
     return addrs.map((address) => ({
       name: this.#hostname, type: TYPE.A, ttl, cacheFlush: true, data: address,
     }));
+  }
+
+  #addressList() {
+    const addresses = this.#addresses ?? localIPv4Addresses().map((item) => item.address);
+    return [...new Set(addresses.filter(isUsableLanIPv4))];
   }
 
   #allRecords(ttl) {

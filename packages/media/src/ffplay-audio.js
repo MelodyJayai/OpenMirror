@@ -8,7 +8,6 @@ export const AAC_ELD_CHANNELS = 2;
 export const AAC_ELD_SAMPLES_PER_FRAME = 480;
 export const AAC_ELD_NO_DATA_MARKER = Buffer.from([0x00, 0x68, 0x34, 0x00]);
 
-const VALID_AAC_ELD_FIRST_BYTES = new Set([0x8c, 0x8d, 0x8e, 0x80, 0x81, 0x82]);
 const DEFAULT_MAX_QUEUE_PACKETS = 256;
 
 /** RFC 3640 SDP for one MPEG4-GENERIC AAC-ELD access unit per RTP packet. */
@@ -135,7 +134,6 @@ export class FfplayAudioSink extends EventEmitter {
       channels: options.channels ?? AAC_ELD_CHANNELS,
       samplesPerFrame: options.samplesPerFrame ?? AAC_ELD_SAMPLES_PER_FRAME,
       config: options.config ?? AAC_ELD_CONFIG,
-      validateAccessUnits: options.validateAccessUnits ?? true,
       spawnProcess: options.spawnProcess ?? spawn,
       createSocket: options.createSocket ?? (() => dgram.createSocket('udp4')),
       allocatePort: options.allocatePort ?? allocateUdpPort,
@@ -163,7 +161,7 @@ export class FfplayAudioSink extends EventEmitter {
   }
 
   writeAudio(packet) {
-    const reason = invalidAudioReason(packet, this.#options.validateAccessUnits);
+    const reason = invalidAudioReason(packet);
     if (reason) {
       this.emit('dropped', { packets: 1, bytes: packet?.payload?.length ?? 0, reason });
       return false;
@@ -328,12 +326,14 @@ export class FfplayAudioSink extends EventEmitter {
   }
 }
 
-function invalidAudioReason(packet, validateAccessUnits) {
+function invalidAudioReason(packet) {
   if (!packet || packet.encrypted) return 'encrypted';
   if (packet.compressionType !== undefined && packet.compressionType !== 8) return 'unsupported-codec';
   if (!Buffer.isBuffer(packet.payload) || packet.payload.length === 0) return 'empty';
   if (packet.payload.equals(AAC_ELD_NO_DATA_MARKER)) return 'no-data';
-  if (validateAccessUnits && !VALID_AAC_ELD_FIRST_BYTES.has(packet.payload[0])) return 'invalid-aac-eld';
+  // Raw AAC-ELD access units have no fixed sync word or magic first byte.
+  // RFC 3640's 13-bit AU-size field is the only bound we can validate here.
+  if (packet.payload.length > 0x1fff) return 'oversized';
   return null;
 }
 

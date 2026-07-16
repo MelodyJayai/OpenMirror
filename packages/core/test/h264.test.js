@@ -1,19 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseAvcC, avccToAnnexB, parameterSetsToAnnexB, hasKeyframe,
-  H264StreamProcessor, MIRROR_PAYLOAD, NAL_TYPE,
+  parseAvcC, parseSpsDimensions, avccToAnnexB, parameterSetsToAnnexB, hasKeyframe,
+  H264StreamProcessor, MIRROR_PAYLOAD, MIRROR_VIDEO_OPTION, NAL_TYPE,
+  isMirrorVideoSuspended,
 } from '../src/stream/h264.js';
 
 const SPS = Buffer.from([0x67, 0x64, 0x00, 0x28, 0xac]); // type 7
 const PPS = Buffer.from([0x68, 0xee, 0x3c, 0xb0]);       // type 8
+const LANDSCAPE_SPS = Buffer.from(
+  '67640016acd940a02ff97011000003000100000300020f162d96',
+  'hex',
+);
+const PORTRAIT_SPS = Buffer.from(
+  '67640016acd9417051e5f011000003000100000300020f162d96',
+  'hex',
+);
 
-function buildAvcC({ nalLengthSize = 4 } = {}) {
+function buildAvcC({ nalLengthSize = 4, sps = SPS, pps = PPS } = {}) {
   return Buffer.concat([
-    Buffer.from([1, SPS[1], SPS[2], SPS[3], 0xfc | (nalLengthSize - 1), 0xe0 | 1]),
-    Buffer.from([SPS.length >> 8, SPS.length & 0xff]), SPS,
+    Buffer.from([1, sps[1], sps[2], sps[3], 0xfc | (nalLengthSize - 1), 0xe0 | 1]),
+    Buffer.from([sps.length >> 8, sps.length & 0xff]), sps,
     Buffer.from([1]),
-    Buffer.from([PPS.length >> 8, PPS.length & 0xff]), PPS,
+    Buffer.from([pps.length >> 8, pps.length & 0xff]), pps,
   ]);
 }
 
@@ -33,6 +42,27 @@ test('parseAvcC extracts SPS/PPS and NAL length size', () => {
   assert.deepEqual(avcC.pps, [PPS]);
   assert.throws(() => parseAvcC(Buffer.from([2, 0, 0])), /avcC/);
   assert.throws(() => parseAvcC(buildAvcC().subarray(0, 13)), /PPS|truncated|overruns/);
+});
+
+test('parseSpsDimensions reports cropped resolution and encoded orientation', () => {
+  assert.deepEqual(parseSpsDimensions(LANDSCAPE_SPS), {
+    width: 640,
+    height: 360,
+    codedWidth: 640,
+    codedHeight: 368,
+    orientation: 'landscape',
+    interlaced: false,
+  });
+  assert.deepEqual(parseSpsDimensions(PORTRAIT_SPS), {
+    width: 360,
+    height: 640,
+    codedWidth: 368,
+    codedHeight: 640,
+    orientation: 'portrait',
+    interlaced: false,
+  });
+  assert.equal(parseAvcC(buildAvcC({ sps: LANDSCAPE_SPS })).dimensions.width, 640);
+  assert.throws(() => parseSpsDimensions(PPS), /SPS/);
 });
 
 test('parameterSetsToAnnexB prefixes start codes', () => {
@@ -83,4 +113,43 @@ test('H264StreamProcessor emits codec config then access units', () => {
   assert.equal(units.length, 1);
   assert.equal(units[0].keyframe, true);
   assert.equal(units[0].timestamp, 3n);
+});
+
+test('H264StreamProcessor reports codec revisions and orientation changes', () => {
+  const codecs = [];
+  const processor = new H264StreamProcessor({
+    onCodec: (codec) => codecs.push(codec),
+  });
+  processor.push({
+    type: MIRROR_PAYLOAD.CODEC,
+    payload: buildAvcC({ sps: LANDSCAPE_SPS }),
+    timestamp: 1n,
+    payloadOption: 0x0156,
+    displayDimensions: {
+      source: { width: 640, height: 360, orientation: 'landscape' },
+      encoded: { width: 640, height: 360, orientation: 'landscape' },
+    },
+  });
+  processor.push({
+    type: MIRROR_PAYLOAD.CODEC,
+    payload: buildAvcC({ sps: PORTRAIT_SPS }),
+    timestamp: 2n,
+    displayDimensions: {
+      source: { width: 360, height: 640, orientation: 'portrait' },
+      encoded: { width: 360, height: 640, orientation: 'portrait' },
+    },
+  });
+
+  assert.equal(codecs[0].revision, 1);
+  assert.equal(codecs[0].payloadOption, 0x0156);
+  assert.equal(codecs[0].dimensionsChanged, false);
+  assert.equal(codecs[0].dimensions.orientation, 'landscape');
+  assert.equal(codecs[1].revision, 2);
+  assert.equal(codecs[1].dimensionsChanged, true);
+  assert.equal(codecs[1].dimensions.orientation, 'portrait');
+  assert.equal(codecs[1].displayDimensions.source.orientation, 'portrait');
+  assert.equal(codecs[1].previousDimensions.width, 640);
+  assert.equal(isMirrorVideoSuspended(0x0156), true);
+  assert.equal(isMirrorVideoSuspended(0x0116), false);
+  assert.equal(MIRROR_VIDEO_OPTION.H264_SUSPENDED, 0x56);
 });

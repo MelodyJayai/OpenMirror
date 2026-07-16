@@ -1,6 +1,6 @@
 // H.264 handling for the AirPlay mirroring stream.
 //
-// Mirror frame payload types (header uint16 at offset 4):
+// Mirror frame payload types (header byte at offset 4; byte 5 carries flags):
 //   0 — video bitstream: AVCC framing, i.e. length-prefixed NAL units
 //       (4-byte big-endian lengths), possibly AES-CTR encrypted
 //   1 — codec data: an AVCDecoderConfigurationRecord (avcC) carrying SPS/PPS;
@@ -16,7 +16,21 @@ export const MIRROR_PAYLOAD = {
   CODEC: 1,
   HEARTBEAT: 2,
   TIME: 4,
+  REPORT: 5,
 };
+
+export const MIRROR_VIDEO_OPTION = {
+  H264_STREAMING: 0x16,
+  H264_SUSPENDED: 0x56,
+  H265_STREAMING: 0x1e,
+  H265_SUSPENDED: 0x5e,
+};
+
+export function isMirrorVideoSuspended(payloadOption = 0) {
+  const option = payloadOption & 0xff;
+  return option === MIRROR_VIDEO_OPTION.H264_SUSPENDED
+    || option === MIRROR_VIDEO_OPTION.H265_SUSPENDED;
+}
 
 const START_CODE = Buffer.from([0, 0, 0, 1]);
 
@@ -27,6 +41,166 @@ export const NAL_TYPE = {
   SPS: 7,
   PPS: 8,
 };
+
+class BitReader {
+  #buffer;
+  #bitOffset = 0;
+
+  constructor(buffer) {
+    this.#buffer = buffer;
+  }
+
+  readBit() {
+    if (this.#bitOffset >= this.#buffer.length * 8) throw new Error('SPS bitstream truncated');
+    const byte = this.#buffer[this.#bitOffset >> 3];
+    const value = (byte >> (7 - (this.#bitOffset & 7))) & 1;
+    this.#bitOffset++;
+    return value;
+  }
+
+  readBits(count) {
+    if (!Number.isInteger(count) || count < 0 || count > 32) {
+      throw new Error('invalid SPS bit count');
+    }
+    let value = 0;
+    for (let i = 0; i < count; i++) value = value * 2 + this.readBit();
+    return value;
+  }
+
+  readUnsignedExpGolomb() {
+    let leadingZeros = 0;
+    while (this.readBit() === 0) {
+      leadingZeros++;
+      if (leadingZeros > 31) throw new Error('invalid SPS Exp-Golomb value');
+    }
+    if (leadingZeros === 0) return 0;
+    return 2 ** leadingZeros - 1 + this.readBits(leadingZeros);
+  }
+
+  readSignedExpGolomb() {
+    const code = this.readUnsignedExpGolomb();
+    return code & 1 ? (code + 1) / 2 : -(code / 2);
+  }
+}
+
+function removeEmulationPreventionBytes(buffer) {
+  const output = [];
+  for (let i = 0; i < buffer.length; i++) {
+    if (i >= 2 && buffer[i] === 0x03 && buffer[i - 1] === 0x00 && buffer[i - 2] === 0x00) {
+      continue;
+    }
+    output.push(buffer[i]);
+  }
+  return Buffer.from(output);
+}
+
+function skipScalingList(reader, size) {
+  let lastScale = 8;
+  let nextScale = 8;
+  for (let index = 0; index < size; index++) {
+    if (nextScale !== 0) {
+      nextScale = (lastScale + reader.readSignedExpGolomb() + 256) % 256;
+    }
+    lastScale = nextScale === 0 ? lastScale : nextScale;
+  }
+}
+
+function dimensionsDiffer(previous, current) {
+  if (!previous || !current) return Boolean(previous || current);
+  return previous.width !== current.width || previous.height !== current.height;
+}
+
+function displayDimensionsDiffer(previous, current) {
+  if (!previous || !current) return Boolean(previous || current);
+  return dimensionsDiffer(previous.source, current.source)
+    || dimensionsDiffer(previous.encoded, current.encoded);
+}
+
+/**
+ * Parse the coded and cropped dimensions from a sequence parameter set NAL.
+ * The result describes the encoded orientation; it does not infer device UI
+ * rotation beyond the width/height change signalled by the sender.
+ */
+export function parseSpsDimensions(sps) {
+  if (!Buffer.isBuffer(sps) || sps.length < 4 || (sps[0] & 0x1f) !== NAL_TYPE.SPS) {
+    throw new Error('Not an H.264 SPS NAL unit');
+  }
+
+  const reader = new BitReader(removeEmulationPreventionBytes(sps.subarray(1)));
+  const profile = reader.readBits(8);
+  reader.readBits(8); // constraint flags and reserved bits
+  reader.readBits(8); // level_idc
+  reader.readUnsignedExpGolomb(); // seq_parameter_set_id
+
+  let chromaFormat = 1;
+  let separateColourPlane = 0;
+  const highProfiles = new Set([44, 83, 86, 100, 110, 118, 122, 128, 134, 135, 138, 139, 144, 244]);
+  if (highProfiles.has(profile)) {
+    chromaFormat = reader.readUnsignedExpGolomb();
+    if (chromaFormat > 3) throw new Error(`Unsupported SPS chroma format ${chromaFormat}`);
+    if (chromaFormat === 3) separateColourPlane = reader.readBit();
+    reader.readUnsignedExpGolomb(); // bit_depth_luma_minus8
+    reader.readUnsignedExpGolomb(); // bit_depth_chroma_minus8
+    reader.readBit(); // qpprime_y_zero_transform_bypass_flag
+    if (reader.readBit()) {
+      const scalingListCount = chromaFormat === 3 ? 12 : 8;
+      for (let index = 0; index < scalingListCount; index++) {
+        if (reader.readBit()) skipScalingList(reader, index < 6 ? 16 : 64);
+      }
+    }
+  }
+
+  reader.readUnsignedExpGolomb(); // log2_max_frame_num_minus4
+  const pictureOrderCountType = reader.readUnsignedExpGolomb();
+  if (pictureOrderCountType === 0) {
+    reader.readUnsignedExpGolomb(); // log2_max_pic_order_cnt_lsb_minus4
+  } else if (pictureOrderCountType === 1) {
+    reader.readBit(); // delta_pic_order_always_zero_flag
+    reader.readSignedExpGolomb(); // offset_for_non_ref_pic
+    reader.readSignedExpGolomb(); // offset_for_top_to_bottom_field
+    const referenceFrames = reader.readUnsignedExpGolomb();
+    for (let index = 0; index < referenceFrames; index++) reader.readSignedExpGolomb();
+  }
+
+  reader.readUnsignedExpGolomb(); // max_num_ref_frames
+  reader.readBit(); // gaps_in_frame_num_value_allowed_flag
+  const widthInMacroblocks = reader.readUnsignedExpGolomb() + 1;
+  const heightInMapUnits = reader.readUnsignedExpGolomb() + 1;
+  const frameMbsOnly = reader.readBit();
+  if (!frameMbsOnly) reader.readBit(); // mb_adaptive_frame_field_flag
+  reader.readBit(); // direct_8x8_inference_flag
+
+  let cropLeft = 0;
+  let cropRight = 0;
+  let cropTop = 0;
+  let cropBottom = 0;
+  if (reader.readBit()) {
+    cropLeft = reader.readUnsignedExpGolomb();
+    cropRight = reader.readUnsignedExpGolomb();
+    cropTop = reader.readUnsignedExpGolomb();
+    cropBottom = reader.readUnsignedExpGolomb();
+  }
+
+  const codedWidth = widthInMacroblocks * 16;
+  const codedHeight = (2 - frameMbsOnly) * heightInMapUnits * 16;
+  const chromaArrayType = separateColourPlane ? 0 : chromaFormat;
+  const subWidth = chromaArrayType === 1 || chromaArrayType === 2 ? 2 : 1;
+  const subHeight = chromaArrayType === 1 ? 2 : 1;
+  const cropUnitX = chromaArrayType === 0 ? 1 : subWidth;
+  const cropUnitY = chromaArrayType === 0 ? 2 - frameMbsOnly : subHeight * (2 - frameMbsOnly);
+  const width = codedWidth - (cropLeft + cropRight) * cropUnitX;
+  const height = codedHeight - (cropTop + cropBottom) * cropUnitY;
+  if (width <= 0 || height <= 0) throw new Error('SPS contains invalid cropped dimensions');
+
+  return {
+    width,
+    height,
+    codedWidth,
+    codedHeight,
+    orientation: width === height ? 'square' : width > height ? 'landscape' : 'portrait',
+    interlaced: !frameMbsOnly,
+  };
+}
 
 /**
  * Parse an AVCDecoderConfigurationRecord (ISO 14496-15 §5.2.4.1).
@@ -58,7 +232,13 @@ export function parseAvcC(buf) {
   const sps = readSets(buf[pos++] & 0x1f);
   if (pos >= buf.length) throw new Error('avcC truncated before PPS count');
   const pps = readSets(buf[pos++]);
-  return { profile, compat, level, nalLengthSize, sps, pps };
+  let dimensions = null;
+  try {
+    dimensions = sps.length ? parseSpsDimensions(sps[0]) : null;
+  } catch {
+    // Parameter-set extraction must remain usable for truncated/novel SPS data.
+  }
+  return { profile, compat, level, nalLengthSize, sps, pps, dimensions };
 }
 
 /** Render an avcC's parameter sets as an Annex-B byte stream (SPS then PPS). */
@@ -116,6 +296,7 @@ export class H264StreamProcessor {
   #onCodec;
   #onVideo;
   #nalLengthSize = 4;
+  #codecRevision = 0;
   codec = null;
 
   constructor({ onCodec, onVideo } = {}) {
@@ -123,13 +304,41 @@ export class H264StreamProcessor {
     this.#onVideo = onVideo ?? (() => {});
   }
 
-  push({ type, payload, timestamp }) {
+  push({
+    type,
+    payload,
+    timestamp,
+    payloadFlags = 0,
+    payloadOption = 0,
+    displayDimensions = null,
+  }) {
     switch (type) {
       case MIRROR_PAYLOAD.CODEC: {
         const avcC = parseAvcC(payload);
-        this.codec = avcC;
+        const previousCodec = this.codec;
+        const previousDimensions = previousCodec?.dimensions ?? null;
+        const previousDisplayDimensions = previousCodec?.displayDimensions ?? null;
+        this.codec = { ...avcC, displayDimensions };
         this.#nalLengthSize = avcC.nalLengthSize;
-        this.#onCodec({ ...avcC, annexB: parameterSetsToAnnexB(avcC), timestamp });
+        this.#codecRevision++;
+        const dimensionsChanged = Boolean(
+          previousCodec
+          && (
+            dimensionsDiffer(previousDimensions, avcC.dimensions)
+            || displayDimensionsDiffer(previousDisplayDimensions, displayDimensions)
+          ),
+        );
+        this.#onCodec({
+          ...this.codec,
+          annexB: parameterSetsToAnnexB(avcC),
+          timestamp,
+          payloadFlags,
+          payloadOption,
+          revision: this.#codecRevision,
+          dimensionsChanged,
+          previousDimensions,
+          previousDisplayDimensions,
+        });
         return;
       }
       case MIRROR_PAYLOAD.VIDEO: {

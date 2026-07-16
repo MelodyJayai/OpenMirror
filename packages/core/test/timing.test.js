@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
+import net from 'node:net';
 import {
   ntpNow, ntpToUnixMs, ntpFixedToMs, encodeTimingPacket, decodeTimingPacket,
   buildTimingRequest, buildTimingReply, timingReplySample, signedRtpDelta,
@@ -79,6 +80,10 @@ test('AirPlayMediaClock maps wrapped audio RTP and video onto one local clock', 
   const video = clock.mapVideo(videoFixed, localBase);
   assert.ok(Math.abs(video.presentationTimeMs - (localBase + 250)) <= 1);
   assert.ok(Math.abs(video.presentationTimeMs - audio.presentationTimeMs) <= 51);
+
+  clock.resetAudio();
+  assert.equal(clock.mapAudio(0x20, localBase), null);
+  assert.equal(clock.mapVideo(videoFixed, localBase).source, 'ntp');
 });
 
 test('buildTimingRequest stamps the local transmit time', () => {
@@ -140,6 +145,39 @@ test('MirrorTransport actively probes the sender timing port', async () => {
     assert.ok(Number.isFinite(sample.roundTripMs));
   } finally {
     sender.close();
+    await transport.close();
+  }
+});
+
+test('MirrorTransport reports active video connections during fast reconnects', async () => {
+  const transport = new MirrorTransport();
+  const ports = await transport.start('127.0.0.1');
+  const connected = [];
+  const disconnected = [];
+  transport.on('video-connection', (event) => connected.push(event));
+  transport.on('video-disconnection', (event) => disconnected.push(event));
+  const first = net.connect(ports.videoPort, '127.0.0.1');
+  const second = net.connect(ports.videoPort, '127.0.0.1');
+  try {
+    await Promise.all([
+      new Promise((resolve, reject) => first.once('connect', resolve).once('error', reject)),
+      new Promise((resolve, reject) => second.once('connect', resolve).once('error', reject)),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(connected.map((event) => event.activeConnections), [1, 2]);
+
+    first.destroy();
+    await new Promise((resolve) => first.once('close', resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(disconnected[0].activeConnections, 1);
+
+    second.destroy();
+    await new Promise((resolve) => second.once('close', resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(disconnected[1].activeConnections, 0);
+  } finally {
+    first.destroy();
+    second.destroy();
     await transport.close();
   }
 });

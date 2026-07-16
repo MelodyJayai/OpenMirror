@@ -83,11 +83,67 @@ test('RtpSequencer handles 16-bit wraparound', () => {
 
 test('RtpSequencer skips ahead when a gap never fills', () => {
   const out = [];
-  const seq = new RtpSequencer((p) => out.push(p.sequence), { depth: 3 });
+  const events = [];
+  const seq = new RtpSequencer((p) => out.push(p.sequence), {
+    depth: 3,
+    onEvent: (event) => events.push(event),
+  });
   seq.push({ sequence: 1 });
   seq.push({ sequence: 3 }); // 2 lost
   seq.push({ sequence: 4 });
   seq.push({ sequence: 5 });
   seq.push({ sequence: 6 }); // buffer over depth → skip to 3
   assert.deepEqual(out, [1, 3, 4, 5, 6]);
+  assert.deepEqual(seq.stats, {
+    received: 5,
+    emitted: 5,
+    late: 0,
+    duplicates: 0,
+    reordered: 4,
+    gapsSkipped: 1,
+    maxPending: 4,
+    pending: 0,
+    nextSequence: 7,
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'gap');
+  assert.equal(events[0].skipped, 1);
+});
+
+test('RtpSequencer reports duplicate and late packets and resets buffered state', () => {
+  const out = [];
+  const events = [];
+  const seq = new RtpSequencer((p) => out.push(p.sequence), {
+    onEvent: (event) => events.push(event),
+  });
+
+  seq.push({ sequence: 20 });
+  seq.push({ sequence: 22 });
+  seq.push({ sequence: 22 });
+  seq.push({ sequence: 19 });
+  assert.deepEqual(out, [20]);
+  assert.equal(seq.stats.duplicates, 1);
+  assert.equal(seq.stats.late, 1);
+  assert.equal(seq.stats.pending, 1);
+
+  seq.reset();
+  assert.equal(seq.stats.pending, 0);
+  assert.equal(seq.stats.nextSequence, null);
+  assert.equal(events.at(-1).type, 'reset');
+  assert.equal(events.at(-1).discarded, 1);
+
+  seq.push({ sequence: 100 });
+  assert.deepEqual(out, [20, 100]);
+  seq.reset({ resetStats: true });
+  assert.deepEqual(seq.stats, {
+    received: 0,
+    emitted: 0,
+    late: 0,
+    duplicates: 0,
+    reordered: 0,
+    gapsSkipped: 0,
+    maxPending: 0,
+    pending: 0,
+    nextSequence: null,
+  });
 });

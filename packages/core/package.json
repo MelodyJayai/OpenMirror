@@ -20,7 +20,9 @@
     "./mirror-stream": "./src/stream/mirror.js",
     "./h264": "./src/stream/h264.js",
     "./rtp": "./src/stream/rtp.js",
-    "./timing": "./src/stream/timing.js"
+    "./timing": "./src/stream/timing.js",
+    "./activity": "./src/stream/activity.js",
+    "./diagnostics": "./src/diagnostics.js"
   },
   "engines": {
     "node": ">=20"

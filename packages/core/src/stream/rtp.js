@@ -86,15 +86,30 @@ export function parseRtpPacket(buf) {
  */
 export class RtpSequencer {
   #onPacket;
+  #onEvent;
   #depth;
   #next = null;              // next expected sequence number
   #pending = new Map();      // seq → packet
 
-  constructor(onPacket, { depth = 64 } = {}) {
+  #stats = RtpSequencer.#emptyStats();
+
+  constructor(onPacket, { depth = 64, onEvent } = {}) {
     if (typeof onPacket !== 'function') throw new Error('RtpSequencer requires an onPacket callback');
     if (!Number.isInteger(depth) || depth < 1) throw new Error('RtpSequencer depth must be a positive integer');
+    if (onEvent !== undefined && typeof onEvent !== 'function') {
+      throw new Error('RtpSequencer onEvent must be a function');
+    }
     this.#onPacket = onPacket;
+    this.#onEvent = onEvent ?? (() => {});
     this.#depth = depth;
+  }
+
+  get stats() {
+    return {
+      ...this.#stats,
+      pending: this.#pending.size,
+      nextSequence: this.#next,
+    };
   }
 
   push(packet) {
@@ -102,21 +117,50 @@ export class RtpSequencer {
     if (!Number.isInteger(seq) || seq < 0 || seq > 0xffff) {
       throw new Error('RTP sequence must be a 16-bit unsigned integer');
     }
+    this.#stats.received++;
     if (this.#next === null) this.#next = seq;
 
     const distance = (seq - this.#next + 0x10000) & 0xffff;
-    if (distance >= 0x8000) return; // older than the head: late duplicate, drop
+    if (distance >= 0x8000) {
+      this.#stats.late++;
+      this.#emitEvent({ type: 'late', sequence: seq });
+      return;
+    }
+    if (this.#pending.has(seq)) {
+      this.#stats.duplicates++;
+      this.#emitEvent({ type: 'duplicate', sequence: seq });
+      return;
+    }
+    if (distance > 0) this.#stats.reordered++;
 
     this.#pending.set(seq, packet);
+    this.#stats.maxPending = Math.max(this.#stats.maxPending, this.#pending.size);
     this.#flush();
 
     // Bound the buffer: if the gap never fills, skip ahead.
     if (this.#pending.size > this.#depth) {
       const sorted = [...this.#pending.keys()]
         .sort((a, b) => ((a - this.#next + 0x10000) & 0xffff) - ((b - this.#next + 0x10000) & 0xffff));
-      this.#next = sorted[0];
+      const nextAvailable = sorted[0];
+      const skipped = (nextAvailable - this.#next + 0x10000) & 0xffff;
+      this.#stats.gapsSkipped += skipped;
+      this.#emitEvent({
+        type: 'gap',
+        fromSequence: this.#next,
+        toSequence: nextAvailable,
+        skipped,
+      });
+      this.#next = nextAvailable;
       this.#flush();
     }
+  }
+
+  reset({ resetStats = false } = {}) {
+    const discarded = this.#pending.size;
+    this.#pending.clear();
+    this.#next = null;
+    if (resetStats) this.#stats = RtpSequencer.#emptyStats();
+    this.#emitEvent({ type: 'reset', discarded, resetStats });
   }
 
   #flush() {
@@ -124,7 +168,24 @@ export class RtpSequencer {
       const packet = this.#pending.get(this.#next);
       this.#pending.delete(this.#next);
       this.#onPacket(packet);
+      this.#stats.emitted++;
       this.#next = (this.#next + 1) & 0xffff;
     }
+  }
+
+  #emitEvent(event) {
+    this.#onEvent({ ...event, stats: this.stats });
+  }
+
+  static #emptyStats() {
+    return {
+      received: 0,
+      emitted: 0,
+      late: 0,
+      duplicates: 0,
+      reordered: 0,
+      gapsSkipped: 0,
+      maxPending: 0,
+    };
   }
 }

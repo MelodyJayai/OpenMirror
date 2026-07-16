@@ -85,7 +85,8 @@ test('FfplayAudioSink launches from SDP and forwards synchronized AAC-ELD', asyn
   const started = once(sink, 'started');
   const forwarded = once(sink, 'packet');
   assert.equal(sink.writeAudio({
-    payload: Buffer.from([0x8c, 1, 2]),
+    // AAC-ELD is a raw bitstream and valid access units do not share a magic byte.
+    payload: Buffer.from([0x70, 1, 2]),
     encrypted: false,
     compressionType: 8,
     sequence: 7,
@@ -105,14 +106,18 @@ test('FfplayAudioSink launches from SDP and forwards synchronized AAC-ELD', asyn
   assert.equal(sink.running, false);
 });
 
-test('FfplayAudioSink rejects encrypted, empty-marker, and malformed frames', () => {
+test('FfplayAudioSink rejects encrypted, empty-marker, and oversized frames', () => {
   const sink = new FfplayAudioSink({ port: 5004 });
   const reasons = [];
   sink.on('dropped', ({ reason }) => reasons.push(reason));
   assert.equal(sink.writeAudio({ payload: Buffer.from([0x8c]), encrypted: true }), false);
   assert.equal(sink.writeAudio({ payload: AAC_ELD_NO_DATA_MARKER, encrypted: false, compressionType: 8 }), false);
-  assert.equal(sink.writeAudio({ payload: Buffer.from([0xff, 1]), encrypted: false, compressionType: 8 }), false);
-  assert.deepEqual(reasons, ['encrypted', 'no-data', 'invalid-aac-eld']);
+  assert.equal(sink.writeAudio({
+    payload: Buffer.alloc(0x2000, 0x70),
+    encrypted: false,
+    compressionType: 8,
+  }), false);
+  assert.deepEqual(reasons, ['encrypted', 'no-data', 'oversized']);
 });
 
 test('FfplayAudioSink paces packets at the shared presentation time', async () => {

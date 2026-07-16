@@ -233,6 +233,12 @@ export class AirPlayMediaClock {
     return this.mapAudio(rtpTimestamp, receivedAtMs);
   }
 
+  /** Clear the RTP/NTP audio anchor after FLUSH while retaining clock sync. */
+  resetAudio() {
+    this.#audioAnchor = null;
+    this.#fallbackRemoteToLocalMs = null;
+  }
+
   mapAudio(rtpTimestamp, nowMs = this.#clock()) {
     if (!this.#audioAnchor || !this.synchronized) return null;
     const ticks = signedRtpDelta(rtpTimestamp, this.#audioAnchor.rtpTimestamp);
