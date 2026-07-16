@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from '../src/stream/mirror.js';
+import { RtspParser } from '../src/rtsp/parser.js';
 
 function packet(payload, { type = 0, timestamp = 0n } = {}) {
   const header = Buffer.alloc(MIRROR_HEADER_BYTES);
@@ -49,6 +50,44 @@ test('MirrorTransport allocates real ports and receives a frame', async () => {
     assert.deepEqual(frame.payload, Buffer.from([1, 2, 3]));
     socket.end();
   } finally {
+    await transport.close();
+  }
+});
+
+test('MirrorTransport parses and acknowledges reverse HTTP event requests', async () => {
+  const transport = new MirrorTransport();
+  const ports = await transport.start('127.0.0.1');
+  let socket;
+
+  try {
+    const requestReceived = new Promise((resolve) => transport.once('event-request', resolve));
+    const responseReceived = new Promise((resolve, reject) => {
+      socket = net.connect(ports.eventPort, '127.0.0.1');
+      const parser = new RtspParser(resolve);
+      socket.on('data', (chunk) => parser.push(chunk));
+      socket.on('error', reject);
+    });
+    await new Promise((resolve, reject) => socket.once('connect', resolve).once('error', reject));
+    const body = Buffer.from('event-body');
+    const request = Buffer.concat([
+      Buffer.from(`POST /event HTTP/1.1\r\nCSeq: 9\r\nContent-Length: ${body.length}\r\n\r\n`, 'latin1'),
+      body,
+    ]);
+    socket.write(request.subarray(0, 13));
+    socket.write(request.subarray(13));
+
+    const event = await requestReceived;
+    assert.equal(event.method, 'POST');
+    assert.equal(event.uri, '/event');
+    assert.deepEqual(event.body, body);
+
+    const response = await responseReceived;
+    assert.equal(response.kind, 'response');
+    assert.equal(response.version, 'HTTP/1.1');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.cseq, '9');
+  } finally {
+    socket?.destroy();
     await transport.close();
   }
 });

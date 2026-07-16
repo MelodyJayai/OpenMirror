@@ -95,6 +95,12 @@ receiver.on('audio-data', ({ session, sequence, payload, encrypted }) => {
 receiver.on('timing-packet', ({ remote, replied }) => {
   if (values.verbose) console.log(`[timing] ${remote.address}:${remote.port}${replied ? ' -> replied' : ''}`);
 });
+receiver.on('event', ({ session, method, uri, payload }) => {
+  if (values.verbose) {
+    const summary = payload ? ` keys=${Object.keys(payload).join(',')}` : '';
+    console.log(`[event] ${session.remoteAddress} ${method} ${uri}${summary}`);
+  }
+});
 receiver.on('stream-error', ({ session, error }) => {
   if (values.verbose) console.log(`[stream] ${session?.remoteAddress ?? 'unknown'} pipeline: ${error.message}`);
 });

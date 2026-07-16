@@ -319,6 +319,27 @@ export class AirPlayReceiver extends EventEmitter {
     });
     transport.on('video-connection', (socket) => this.emit('video-connection', { socket, session }));
     transport.on('event-connection', (socket) => this.emit('event-connection', { socket, session }));
+    transport.on('event-request', (request) => {
+      let payload = null;
+      if (request.body.length) {
+        try {
+          payload = decodeBplist(request.body);
+        } catch (error) {
+          this.emit('stream-error', { error, type: 'event-plist', session });
+        }
+      }
+      this.emit('event', {
+        method: request.method,
+        uri: request.uri,
+        headers: request.headers,
+        body: request.body,
+        payload,
+        session,
+      });
+    });
+    transport.on('event-error', ({ error }) => {
+      this.emit('stream-error', { error, type: 'event-http', session });
+    });
     transport.on('timing-packet', (packet) => this.emit('timing-packet', { ...packet, session }));
     transport.on('error', (error) => this.emit('error', error));
     return media;

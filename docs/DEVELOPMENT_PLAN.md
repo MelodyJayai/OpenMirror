@@ -120,7 +120,7 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 | **M6 Google Cast** | mDNS `_googlecast._tcp`、TLS 8009、protobuf CastChannel、镜像 app | Android/Chrome 可投放 |
 | **M7 Miracast（评估）** | Windows 上依托 OS Wi-Fi Direct API 评估可行性 | 可行性报告 + 原型 |
 
-**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配，并具备可注入 provider 的 FairPlay fp-setup 两阶段握手状态机及会话/流密钥派生；M4 已具备镜像 TCP 帧增量解析、AES 视频/音频解密器、H.264 avcC 参数集解析与 AVCC→Annex-B 转换、音频 RTP 解包和重排序、NTP timing 自动应答，以及独立 `packages/media` 的 ffplay 低延迟视频窗口。**尚未完成**：真实 FairPlay 解密表（默认 provider 仅生成协议形状，不能与真机完成媒体密钥解密）、AAC 解码/输出与精确音画同步、M5 桌面应用与完整 RAOP。
+**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配，并具备可注入 provider 的 FairPlay fp-setup 两阶段握手状态机及会话/流密钥派生；M4 已具备镜像 TCP 帧增量解析、AES 视频/音频解密器、H.264 avcC 参数集解析与 AVCC→Annex-B 转换、音频 RTP 解包和重排序、NTP timing 自动应答、eventPort 反向 HTTP/bplist 事件通道，以及独立 `packages/media` 的 ffplay 低延迟视频窗口。**尚未完成**：真实 FairPlay 解密表（默认 provider 仅生成协议形状，不能与真机完成媒体密钥解密）、AAC 解码/输出与精确音画同步、M5 桌面应用与完整 RAOP。
 
 ---
 

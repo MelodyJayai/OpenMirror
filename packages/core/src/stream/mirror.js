@@ -3,6 +3,7 @@ import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
 import { buildTimingReply } from './timing.js';
 import { parseRtpPacket } from './rtp.js';
+import { RtspParser, encodeResponse } from '../rtsp/parser.js';
 
 export const MIRROR_HEADER_BYTES = 128;
 export const DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -151,6 +152,27 @@ export class MirrorTransport extends EventEmitter {
 
   #acceptEvent(socket) {
     this.#track(socket);
+    const parser = new RtspParser((message) => {
+      if (message.kind === 'request') {
+        this.emit('event-request', { ...message, socket });
+        const headers = message.headers['cseq'] === undefined
+          ? {}
+          : { CSeq: message.headers['cseq'] };
+        socket.write(encodeResponse({ status: 200, headers }, 'HTTP/1.1'));
+      } else {
+        this.emit('event-response', { ...message, socket });
+      }
+    });
+    socket.on('data', (chunk) => {
+      try {
+        parser.push(chunk);
+      } catch (error) {
+        this.emit('event-error', { error, socket });
+        if (!socket.destroyed) {
+          socket.end(encodeResponse({ status: 400 }, 'HTTP/1.1'));
+        }
+      }
+    });
     this.emit('event-connection', socket);
   }
 }

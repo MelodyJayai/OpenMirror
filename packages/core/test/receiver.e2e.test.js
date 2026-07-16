@@ -142,6 +142,7 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
   const client = await connect(port);
   let video;
   let audio;
+  let eventClient;
 
   try {
     const setupBody = encodeBplist({
@@ -216,11 +217,23 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     await reorderedPackets;
     assert.deepEqual(reordered, [11, 12]);
 
+    const eventReceived = new Promise((resolve) => receiver.once('event', resolve));
+    eventClient = await connect(response.eventPort);
+    const eventBody = encodeBplist({ type: 'playbackState', state: 'playing' });
+    const eventResponse = await eventClient.request('POST /event HTTP/1.1\r\nCSeq: 3', eventBody);
+    assert.equal(eventResponse.version, 'HTTP/1.1');
+    assert.equal(eventResponse.status, 200);
+    const event = await eventReceived;
+    assert.equal(event.method, 'POST');
+    assert.equal(event.uri, '/event');
+    assert.deepEqual(event.payload, { type: 'playbackState', state: 'playing' });
+
     const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2');
     assert.equal(teardown.status, 200);
   } finally {
     video?.destroy();
     audio?.close();
+    eventClient?.end();
     client.end();
     await receiver.stop();
   }
