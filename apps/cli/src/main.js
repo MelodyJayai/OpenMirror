@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // OpenMirror interoperability receiver and diagnostic harness.
 
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -17,7 +17,7 @@ import { FfplayAudioSink, FfplayVideoSink, probeFfplay } from '@openmirror/media
 
 const { values } = parseArgs({
   options: {
-    name: { type: 'string', short: 'n', default: 'OpenMirror' },
+    name: { type: 'string', short: 'n' },
     port: { type: 'string', short: 'p', default: '7000' },
     verbose: { type: 'boolean', short: 'v', default: false },
     headless: { type: 'boolean', default: false },
@@ -92,7 +92,7 @@ try {
 }
 
 const receiver = new AirPlayReceiver({
-  name: values.name,
+  name: values.name ?? process.env.OPENMIRROR_NAME ?? 'OpenMirror',
   port: options.port,
   videoIdleMs: options.videoIdleMs,
   mediaIdleMs: options.mediaIdleMs,
@@ -102,8 +102,12 @@ const receiver = new AirPlayReceiver({
 let diagnosticsPath = null;
 let diagnosticsStream = null;
 const diagnosticsRunId = randomUUID();
-if (values.diagnostics) {
-  diagnosticsPath = resolve(values.diagnostics);
+const configuredDiagnostics = values.diagnostics ?? process.env.OPENMIRROR_DIAGNOSTICS;
+const stopRequestPath = process.env.OPENMIRROR_STOP_FILE
+  ? resolve(process.env.OPENMIRROR_STOP_FILE)
+  : null;
+if (configuredDiagnostics) {
+  diagnosticsPath = resolve(configuredDiagnostics);
   await mkdir(dirname(diagnosticsPath), { recursive: true });
   diagnosticsStream = createWriteStream(diagnosticsPath, { flags: 'a' });
   diagnosticsStream.on('error', (error) => {
@@ -180,6 +184,7 @@ const latestCodecs = new Map();
 const intentionallyStoppedVideoSinks = new WeakSet();
 const intentionallyStoppedAudioSinks = new WeakSet();
 const localAddressSet = new Set(localIPv4Addresses().map((address) => address.address));
+const receiverName = receiver.options.name;
 let externalDiscoverySeen = false;
 let sessionSeen = false;
 
@@ -193,7 +198,7 @@ function videoSinkFor(session) {
   if (sink) return sink;
   sink = new FfplayVideoSink({
     executable: values.ffplay,
-    title: `${values.name} — ${session.remoteAddress}`,
+    title: `${receiverName} — ${session.remoteAddress}`,
     fullscreen: values.fullscreen,
   });
   sink.on('started', ({ pid }) => {
@@ -521,7 +526,7 @@ receiver.on('warning', (error) => {
 const { port } = await receiver.start();
 const addresses = localIPv4Addresses().map((address) => address.address).join(', ')
   || 'no LAN address found';
-console.log(`OpenMirror receiver "${values.name}" started`);
+console.log(`OpenMirror receiver "${receiverName}" started`);
 console.log(`  control port : ${port}`);
 console.log(`  addresses    : ${addresses}`);
 console.log(`  device id    : ${receiver.options.deviceId}`);
@@ -544,10 +549,13 @@ const discoveryWatchdog = setTimeout(() => {
 discoveryWatchdog.unref?.();
 
 let stopping = false;
+let stopFileTimer = null;
 async function stop() {
   if (stopping) return;
   stopping = true;
   clearTimeout(discoveryWatchdog);
+  clearInterval(stopFileTimer);
+  stopFileTimer = null;
   console.log('\nStopping (sending mDNS goodbye)…');
   await Promise.all([
     ...[...videoSinks.keys()].map((session) => stopVideoSink(session, 'shutdown')),
@@ -563,6 +571,17 @@ async function stop() {
   if (diagnosticsStream) {
     await new Promise((resolveClose) => diagnosticsStream.end(resolveClose));
   }
+}
+
+if (stopRequestPath) {
+  stopFileTimer = setInterval(() => {
+    if (!existsSync(stopRequestPath)) return;
+    void stop().catch((error) => {
+      console.error(`[shutdown] ${error.message}`);
+      process.exitCode = 1;
+    });
+  }, 200);
+  stopFileTimer.unref?.();
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

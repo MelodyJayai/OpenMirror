@@ -61,7 +61,7 @@ npm start -- --verbose --stats-interval 2 --diagnostics .openmirror-diagnostics/
 5. 锁屏至少 10 秒后解锁，确认媒体进入 idle/closed，再出现 resumed；恢复后不应保留僵尸 ffplay 进程。
 6. 在 iPhone/iPad 上停止镜像，再立即重新连接两次，确认每次都建立新会话且旧媒体端口/播放器被释放。
 7. 连续播放 3–5 分钟，观察 RTP gap、音视频延迟、A/V 偏差和 clock drift；记录任何爆音、冻结、黑屏或持续漂移。
-8. 正常停止镜像并按 Ctrl+C 退出接收器，确保 JSONL 最后包含 `session-report` 与 `final-snapshot`。
+8. 正常停止镜像并在脚本窗口按 Enter；脚本会请求接收器优雅退出，确保 JSONL 最后包含 `session-report` 与 `final-snapshot`，然后继续现场确认。Ctrl+C 只用于异常中止，仍会清理临时规则，但不会进入确认步骤。
 9. 回答脚本的五项现场确认；结果会以不含设备信息的 `manual-verification` 记录追加到 JSONL。
 
 自动检查报告；手动启动接收器时使用 `--confirm` 录入现场观察：

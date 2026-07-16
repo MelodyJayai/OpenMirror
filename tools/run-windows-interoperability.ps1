@@ -40,6 +40,7 @@ if (-not $Diagnostics) {
   $Diagnostics = Join-Path $repoRoot ".openmirror-diagnostics\iphone-ipad-$stamp.jsonl"
 }
 $Diagnostics = [System.IO.Path]::GetFullPath($Diagnostics)
+$stopFile = Join-Path ([System.IO.Path]::GetTempPath()) "openmirror-stop-$PID-$stamp.signal"
 $ruleNames = @(
   "OpenMirror Interop TCP $PID",
   "OpenMirror Interop UDP $PID"
@@ -110,11 +111,8 @@ Write-Host 'Temporary firewall rules are restricted to node.exe and LocalSubnet.
 
 $cliArgs = @(
   'apps/cli/src/main.js',
-  '--name', $Name,
   '--port', [string]$Port,
-  '--verbose',
   '--stats-interval', '2',
-  '--diagnostics', $Diagnostics,
   '--advertise-address', $AdvertiseAddress
 )
 
@@ -126,10 +124,11 @@ Write-Host '  3. Rotate portrait/landscape twice.'
 Write-Host '  4. Lock for at least 10 seconds, then unlock.'
 Write-Host '  5. Stop mirroring, reconnect, and play again.'
 Write-Host '  6. Keep the final media session active for at least 30 seconds.'
-Write-Host '  7. Stop mirroring normally, then press Ctrl+C to finish.'
+Write-Host '  7. Stop mirroring normally, then press Enter here to finish.'
 Write-Host ''
 
 $cliExitCode = 0
+$cliProcess = $null
 try {
   New-NetFirewallRule `
     -DisplayName $ruleNames[0] `
@@ -150,14 +149,106 @@ try {
     -RemoteAddress LocalSubnet `
     -Profile Any | Out-Null
 
-  Push-Location $repoRoot
-  try {
-    & $node @cliArgs
-    $cliExitCode = $LASTEXITCODE
-  } finally {
-    Pop-Location
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $node
+  $startInfo.WorkingDirectory = $repoRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.Arguments = $cliArgs -join ' '
+  $startInfo.EnvironmentVariables['OPENMIRROR_NAME'] = $Name
+  $startInfo.EnvironmentVariables['OPENMIRROR_DIAGNOSTICS'] = $Diagnostics
+  $startInfo.EnvironmentVariables['OPENMIRROR_STOP_FILE'] = $stopFile
+
+  $cliProcess = New-Object System.Diagnostics.Process
+  $cliProcess.StartInfo = $startInfo
+  if (-not $cliProcess.Start()) {
+    throw 'Failed to start the OpenMirror CLI process.'
+  }
+
+  $stdoutTask = $cliProcess.StandardOutput.ReadLineAsync()
+  $stderrTask = $cliProcess.StandardError.ReadLineAsync()
+  $stopRequested = $false
+  Write-Host 'OpenMirror is running. Press Enter after completing the regression sequence.'
+  while (-not $cliProcess.HasExited) {
+    while ($stdoutTask -and $stdoutTask.IsCompleted) {
+      $line = $stdoutTask.Result
+      if ($null -eq $line) {
+        $stdoutTask = $null
+      } else {
+        Write-Host $line
+        $stdoutTask = $cliProcess.StandardOutput.ReadLineAsync()
+      }
+    }
+    while ($stderrTask -and $stderrTask.IsCompleted) {
+      $line = $stderrTask.Result
+      if ($null -eq $line) {
+        $stderrTask = $null
+      } else {
+        Write-Host $line -ForegroundColor DarkYellow
+        $stderrTask = $cliProcess.StandardError.ReadLineAsync()
+      }
+    }
+    if (-not $stopRequested -and [Console]::KeyAvailable) {
+      $key = [Console]::ReadKey($true)
+      if ($key.Key -eq [ConsoleKey]::Enter) {
+        $stopRequested = $true
+        [System.IO.File]::WriteAllText($stopFile, 'stop')
+        Write-Host 'Graceful shutdown requested; waiting for final diagnostics...'
+      }
+    }
+    Start-Sleep -Milliseconds 20
+  }
+  $cliProcess.WaitForExit()
+  while ($stdoutTask -or $stderrTask) {
+    if ($stdoutTask -and $stdoutTask.IsCompleted) {
+      $line = $stdoutTask.Result
+      if ($null -eq $line) {
+        $stdoutTask = $null
+      } else {
+        Write-Host $line
+        $stdoutTask = $cliProcess.StandardOutput.ReadLineAsync()
+      }
+    }
+    if ($stderrTask -and $stderrTask.IsCompleted) {
+      $line = $stderrTask.Result
+      if ($null -eq $line) {
+        $stderrTask = $null
+      } else {
+        Write-Host $line -ForegroundColor DarkYellow
+        $stderrTask = $cliProcess.StandardError.ReadLineAsync()
+      }
+    }
+    if ($stdoutTask -or $stderrTask) {
+      Start-Sleep -Milliseconds 10
+    }
+  }
+  $cliExitCode = $cliProcess.ExitCode
+  if ($cliExitCode -ne 0) {
+    Write-Warning "OpenMirror CLI exited with code $cliExitCode."
   }
 } finally {
+  if ($cliProcess -and -not $cliProcess.HasExited) {
+    try {
+      [System.IO.File]::WriteAllText($stopFile, 'stop')
+      if (-not $cliProcess.WaitForExit(10000)) {
+        $cliProcess.Kill()
+        $cliProcess.WaitForExit()
+      }
+    } catch {
+      Write-Warning "Could not gracefully stop OpenMirror: $($_.Exception.Message)"
+      try {
+        if (-not $cliProcess.HasExited) {
+          $cliProcess.Kill()
+          $cliProcess.WaitForExit()
+        }
+      } catch {
+        Write-Warning "Could not terminate OpenMirror: $($_.Exception.Message)"
+      }
+    }
+  }
+  Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
   Get-NetFirewallRule -DisplayName $ruleNames -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule -ErrorAction SilentlyContinue
   Write-Host 'Temporary OpenMirror firewall rules removed.'
