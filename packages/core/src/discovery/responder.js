@@ -152,7 +152,9 @@ export class MdnsResponder extends EventEmitter {
     const port = destination?.port ?? MDNS_PORT;
     const addr = destination?.address ?? MDNS_ADDRESS;
     this.#socket.send(msg, port, addr, (err) => {
-      if (err) this.emit('error', err);
+      // Send failures (no multicast route, interface down) are non-fatal:
+      // the responder keeps answering on whatever interfaces do work.
+      if (err) this.emit('warning', err);
     });
   }
 
@@ -218,7 +220,7 @@ export class MdnsResponder extends EventEmitter {
     const buf = encodeMessage(message2);
     const dest = unicast ? rinfo : null;
     this.#socket.send(buf, dest?.port ?? MDNS_PORT, dest?.address ?? MDNS_ADDRESS, (err) => {
-      if (err) this.emit('error', err);
+      if (err) this.emit('warning', err);
     });
     this.emit('query', { questions: message.questions, from: rinfo, unicast });
   }
