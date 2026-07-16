@@ -8,6 +8,7 @@ import { buildServices, randomDeviceId, DEFAULT_FEATURES } from './discovery/air
 import { RtspServer } from './rtsp/server.js';
 import { encodeBplist, decodeBplist } from './plist/bplist.js';
 import { DeviceIdentity, PairingSession } from './crypto/pairing.js';
+import { MirrorTransport } from './stream/mirror.js';
 
 export { MdnsResponder, localIPv4Addresses } from './discovery/responder.js';
 export * as dns from './discovery/dns.js';
@@ -16,6 +17,7 @@ export { RtspServer } from './rtsp/server.js';
 export { RtspParser, encodeResponse } from './rtsp/parser.js';
 export { encodeBplist, decodeBplist } from './plist/bplist.js';
 export { DeviceIdentity, PairingSession } from './crypto/pairing.js';
+export { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from './stream/mirror.js';
 
 export class AirPlayReceiver extends EventEmitter {
   #responder;
@@ -35,6 +37,9 @@ export class AirPlayReceiver extends EventEmitter {
     this.#identity = new DeviceIdentity({ privateKeySeed: options.privateKeySeed });
     this.#responder = new MdnsResponder({ hostname: this.#options.hostname });
     this.#rtsp = new RtspServer();
+    this.#rtsp.on('session-closed', (session) => {
+      this.#closeMedia(session).catch((error) => this.emit('error', error));
+    });
     this.#installHandlers();
   }
 
@@ -127,24 +132,38 @@ export class AirPlayReceiver extends EventEmitter {
       },
     }));
 
-    rtsp.handle('SETUP', (request, ctx) => {
+    rtsp.handle('SETUP', async (request, ctx) => {
       let payload = null;
       try {
         payload = decodeBplist(request.body);
       } catch {
         // Legacy SDP-style SETUP; handled in the media milestone.
       }
-      this.emit('setup', { payload, session: ctx.session });
-      // Media channel allocation lands in M4; return our timing/event ports
-      // placeholder so the exchange is observable during bring-up.
+      const media = await this.#media(ctx);
+      const requestedStreams = Array.isArray(payload?.streams) ? payload.streams : [];
+      const streams = requestedStreams.map((stream) => ({
+        type: stream.type,
+        dataPort: media.ports.videoPort,
+        ...(stream.streamConnectionID === undefined ? {} : { streamConnectionID: stream.streamConnectionID }),
+      }));
+      ctx.session.state.setup = payload;
+      this.emit('setup', { payload, ports: media.ports, session: ctx.session });
       return {
         status: 200,
         headers: { 'Content-Type': 'application/x-apple-binary-plist' },
-        body: encodeBplist({ eventPort: 0, timingPort: 0 }),
+        body: encodeBplist({
+          eventPort: media.ports.eventPort,
+          timingPort: media.ports.timingPort,
+          ...(streams.length ? { streams } : {}),
+        }),
       };
     });
 
-    rtsp.handle('RECORD', () => ({ status: 200, headers: { 'Audio-Latency': '11025' } }));
+    rtsp.handle('RECORD', (request, ctx) => {
+      ctx.session.state.recording = true;
+      this.emit('record', { session: ctx.session });
+      return { status: 200, headers: { 'Audio-Latency': '11025' } };
+    });
     rtsp.handle('SET_PARAMETER', () => ({ status: 200 }));
     rtsp.handle('GET_PARAMETER', (request) => {
       const text = request.body.toString('latin1').trim();
@@ -157,11 +176,40 @@ export class AirPlayReceiver extends EventEmitter {
       }
       return { status: 200 };
     });
-    rtsp.handle('FLUSH', () => ({ status: 200 }));
-    rtsp.handle('TEARDOWN', (request, ctx) => {
+    rtsp.handle('FLUSH', (request, ctx) => {
+      this.emit('flush', { session: ctx.session });
+      return { status: 200 };
+    });
+    rtsp.handle('TEARDOWN', async (request, ctx) => {
+      await this.#closeMedia(ctx.session);
       this.emit('teardown', { session: ctx.session });
       return { status: 200 };
     });
+  }
+
+  async #media(ctx) {
+    if (ctx.session.state.media) return ctx.session.state.media;
+    const transport = new MirrorTransport();
+    const bindHost = ctx.session.localAddress?.startsWith('::ffff:')
+      ? ctx.session.localAddress.slice(7)
+      : ctx.session.localAddress;
+    const ports = await transport.start(bindHost);
+    const media = { transport, ports };
+    ctx.session.state.media = media;
+    transport.on('video-frame', (frame) => this.emit('video-frame', { ...frame, session: ctx.session }));
+    transport.on('video-connection', (socket) => this.emit('video-connection', { socket, session: ctx.session }));
+    transport.on('event-connection', (socket) => this.emit('event-connection', { socket, session: ctx.session }));
+    transport.on('timing-packet', (packet) => this.emit('timing-packet', { ...packet, session: ctx.session }));
+    transport.on('error', (error) => this.emit('error', error));
+    return media;
+  }
+
+  async #closeMedia(session) {
+    const media = session.state.media;
+    if (!media) return;
+    delete session.state.media;
+    session.state.recording = false;
+    await media.transport.close();
   }
 
   #deviceInfo() {

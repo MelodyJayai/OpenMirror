@@ -9,7 +9,7 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { AirPlayReceiver } from '../src/index.js';
 import { RtspParser } from '../src/rtsp/parser.js';
-import { decodeBplist } from '../src/plist/bplist.js';
+import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
 import { rawEd25519PublicKey, x25519PublicFromRaw, ed25519PublicFromRaw } from '../src/crypto/pairing.js';
 
 function connect(port) {
@@ -104,6 +104,50 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     assert.equal(step2.status, 200);
     await paired;
   } finally {
+    client.end();
+    await receiver.stop();
+  }
+});
+
+test('AirPlayReceiver SETUP allocates a media transport and forwards mirror frames', async () => {
+  const receiver = new AirPlayReceiver({ name: 'MediaE2E', port: 0 });
+  const { port } = await receiver.start();
+  const client = await connect(port);
+  let video;
+
+  try {
+    const setupBody = encodeBplist({
+      timingProtocol: 'NTP',
+      streams: [{ type: 110, streamConnectionID: 123456 }],
+    });
+    const setup = await client.request('SETUP rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 1', setupBody);
+    assert.equal(setup.status, 200);
+    const response = decodeBplist(setup.body);
+    assert.ok(response.eventPort > 0);
+    assert.ok(response.timingPort > 0);
+    assert.equal(response.streams[0].type, 110);
+    assert.equal(response.streams[0].streamConnectionID, 123456);
+    assert.ok(response.streams[0].dataPort > 0);
+
+    const frameReceived = new Promise((resolve) => receiver.once('video-frame', resolve));
+    video = net.connect(response.streams[0].dataPort, '127.0.0.1');
+    await new Promise((resolve, reject) => video.once('connect', resolve).once('error', reject));
+    const payload = Buffer.from([0, 0, 0, 1, 0x67, 0x64]);
+    const header = Buffer.alloc(128);
+    header.writeUInt32LE(payload.length, 0);
+    header.writeUInt16LE(1, 4);
+    header.writeBigUInt64LE(777n, 8);
+    video.write(Buffer.concat([header, payload]));
+
+    const frame = await frameReceived;
+    assert.equal(frame.type, 1);
+    assert.equal(frame.timestamp, 777n);
+    assert.deepEqual(frame.payload, payload);
+
+    const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2');
+    assert.equal(teardown.status, 200);
+  } finally {
+    video?.destroy();
     client.end();
     await receiver.stop();
   }

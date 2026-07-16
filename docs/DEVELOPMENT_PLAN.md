@@ -120,7 +120,7 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 | **M6 Google Cast** | mDNS `_googlecast._tcp`、TLS 8009、protobuf CastChannel、镜像 app | Android/Chrome 可投放 |
 | **M7 Miracast（评估）** | Windows 上依托 OS Wi-Fi Direct API 评估可行性 | 可行性报告 + 原型 |
 
-**当前会话落实范围**：M0 全部 + M1 全部 + M2 全部 + M3 的 pair-setup/pair-verify 部分（FairPlay 与媒体流涉及大量逆向常量与真机联调，后续迭代）。
+**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配；M4 已具备镜像 TCP 通道和 128 字节帧头的增量解析，并预留 event TCP 与 timing UDP 通道。下一步是 FairPlay 密钥交换/流解密、NTP 应答、H.264 解码渲染和音频 RTP。
 
 ---
 

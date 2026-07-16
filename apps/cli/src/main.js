@@ -38,8 +38,11 @@ receiver.on('request', ({ method, uri, session }) => {
 receiver.on('paired', ({ session }) => {
   console.log(`[pair] ${session.remoteAddress} completed pair-verify`);
 });
-receiver.on('setup', ({ session }) => {
-  console.log(`[setup] ${session.remoteAddress} requested media session (media pipeline: milestone M4)`);
+receiver.on('setup', ({ session, ports }) => {
+  console.log(`[setup] ${session.remoteAddress} media ports: video TCP ${ports.videoPort}, event TCP ${ports.eventPort}, timing UDP ${ports.timingPort}`);
+});
+receiver.on('video-frame', ({ session, type, payloadLength, timestamp }) => {
+  if (values.verbose) console.log(`[video] ${session.remoteAddress} type=${type} bytes=${payloadLength} timestamp=${timestamp}`);
 });
 receiver.on('teardown', ({ session }) => {
   console.log(`[teardown] ${session.remoteAddress} ended session`);

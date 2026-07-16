@@ -13,7 +13,8 @@
     "./bplist": "./src/plist/bplist.js",
     "./rtsp-parser": "./src/rtsp/parser.js",
     "./rtsp-server": "./src/rtsp/server.js",
-    "./pairing": "./src/crypto/pairing.js"
+    "./pairing": "./src/crypto/pairing.js",
+    "./mirror-stream": "./src/stream/mirror.js"
   },
   "engines": {
     "node": ">=20"
