@@ -9,6 +9,10 @@ import { RtspServer } from './rtsp/server.js';
 import { encodeBplist, decodeBplist } from './plist/bplist.js';
 import { DeviceIdentity, PairingSession } from './crypto/pairing.js';
 import { MirrorTransport } from './stream/mirror.js';
+import { FairPlaySession, createStubFairPlayProvider } from './crypto/fairplay.js';
+import { MirrorStreamDecryptor, AudioPacketDecryptor } from './crypto/stream.js';
+import { H264StreamProcessor, MIRROR_PAYLOAD } from './stream/h264.js';
+import { AUDIO_PAYLOAD } from './stream/rtp.js';
 
 export { MdnsResponder, localIPv4Addresses } from './discovery/responder.js';
 export * as dns from './discovery/dns.js';
@@ -18,12 +22,28 @@ export { RtspParser, encodeResponse } from './rtsp/parser.js';
 export { encodeBplist, decodeBplist } from './plist/bplist.js';
 export { DeviceIdentity, PairingSession } from './crypto/pairing.js';
 export { MirrorFrameParser, MirrorTransport, MIRROR_HEADER_BYTES } from './stream/mirror.js';
+export {
+  FairPlaySession, createStubFairPlayProvider, classifyFpSetup, isFairPlayMessage,
+} from './crypto/fairplay.js';
+export {
+  MirrorStreamDecryptor, AudioPacketDecryptor, deriveMirrorStreamKey, unsignedConnectionId,
+} from './crypto/stream.js';
+export {
+  H264StreamProcessor, MIRROR_PAYLOAD, NAL_TYPE, parseAvcC, avccToAnnexB,
+  parameterSetsToAnnexB, hasKeyframe,
+} from './stream/h264.js';
+export { parseRtpPacket, RtpSequencer, AUDIO_PAYLOAD, RTP_HEADER_BYTES } from './stream/rtp.js';
+export {
+  ntpNow, ntpToUnixMs, decodeTimingPacket, encodeTimingPacket, buildTimingReply,
+  TIMING_REQUEST, TIMING_REPLY,
+} from './stream/timing.js';
 
 export class AirPlayReceiver extends EventEmitter {
   #responder;
   #rtsp;
   #identity;
   #options;
+  #fairPlayProvider;
 
   constructor(options = {}) {
     super();
@@ -34,6 +54,10 @@ export class AirPlayReceiver extends EventEmitter {
       features: options.features ?? DEFAULT_FEATURES,
       hostname: options.hostname,
     };
+    // Inject a verified playfair provider for real-device interoperability.
+    // The default provider implements only the public wire shape and cannot
+    // derive a usable media key.
+    this.#fairPlayProvider = options.fairPlayProvider ?? createStubFairPlayProvider();
     this.#identity = new DeviceIdentity({ privateKeySeed: options.privateKeySeed });
     this.#responder = new MdnsResponder({ hostname: this.#options.hostname });
     this.#rtsp = new RtspServer();
@@ -116,11 +140,20 @@ export class AirPlayReceiver extends EventEmitter {
       };
     });
 
-    // FairPlay key exchange — M3 follow-up. Acknowledged so the sender keeps
-    // talking during protocol bring-up; real fp-setup replies land next.
-    rtsp.handle('POST', '/fp-setup', (request) => {
-      this.emit('fp-setup', { bytes: request.body.length });
-      return { status: 200, headers: { 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(0) };
+    rtsp.handle('POST', '/fp-setup', (request, ctx) => {
+      ctx.session.state.fairplay ??= new FairPlaySession(this.#fairPlayProvider);
+      const fairplay = ctx.session.state.fairplay;
+      const body = fairplay.handle(request.body);
+      this.emit('fp-setup', {
+        phase: fairplay.phase,
+        bytes: request.body.length,
+        session: ctx.session,
+      });
+      return {
+        status: 200,
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body,
+      };
     });
 
     rtsp.handle('POST', '/feedback', () => ({ status: 200 }));
@@ -140,13 +173,14 @@ export class AirPlayReceiver extends EventEmitter {
         // Legacy SDP-style SETUP; handled in the media milestone.
       }
       const media = await this.#media(ctx);
+      const state = ctx.session.state;
+      if (Buffer.isBuffer(payload?.ekey)) state.ekey = Buffer.from(payload.ekey);
+      if (Buffer.isBuffer(payload?.eiv)) state.eiv = Buffer.from(payload.eiv);
+      this.#resolveSessionKey(state, ctx.session);
+
       const requestedStreams = Array.isArray(payload?.streams) ? payload.streams : [];
-      const streams = requestedStreams.map((stream) => ({
-        type: stream.type,
-        dataPort: media.ports.videoPort,
-        ...(stream.streamConnectionID === undefined ? {} : { streamConnectionID: stream.streamConnectionID }),
-      }));
-      ctx.session.state.setup = payload;
+      const streams = requestedStreams.map((stream) => this.#setupStream(stream, media, state));
+      state.setup = payload;
       this.emit('setup', { payload, ports: media.ports, session: ctx.session });
       return {
         status: 200,
@@ -187,6 +221,48 @@ export class AirPlayReceiver extends EventEmitter {
     });
   }
 
+  #resolveSessionKey(state, session) {
+    if (state.sessionKey || !state.ekey) return;
+    try {
+      const unwrapped = this.#fairPlayProvider.decryptKey?.(state.ekey, state.fairplay);
+      const key = unwrapped ?? state.fairplay?.sharedKey ?? null;
+      if (key) {
+        if (!Buffer.isBuffer(key) || key.length < 16) {
+          throw new Error('FairPlay provider returned an invalid media key');
+        }
+        state.sessionKey = Buffer.from(key.subarray(0, 16));
+      }
+    } catch (error) {
+      this.emit('stream-error', { error, type: 'fairplay-key', session });
+    }
+  }
+
+  #setupStream(stream, media, state) {
+    // AirPlay stream type 96 is audio; type 110 is screen mirroring video.
+    if (stream.type === 96) {
+      state.audio = {
+        format: stream.audioFormat,
+        decryptor: state.sessionKey && state.eiv?.length >= 16
+          ? new AudioPacketDecryptor(state.sessionKey, state.eiv.subarray(0, 16))
+          : null,
+      };
+      return {
+        type: 96,
+        dataPort: media.ports.audioPort,
+        controlPort: media.ports.audioControlPort,
+      };
+    }
+
+    if (stream.streamConnectionID !== undefined && state.sessionKey) {
+      state.videoDecryptor = new MirrorStreamDecryptor(state.sessionKey, stream.streamConnectionID);
+    }
+    return {
+      type: stream.type,
+      dataPort: media.ports.videoPort,
+      ...(stream.streamConnectionID === undefined ? {} : { streamConnectionID: stream.streamConnectionID }),
+    };
+  }
+
   async #media(ctx) {
     if (ctx.session.state.media) return ctx.session.state.media;
     const transport = new MirrorTransport();
@@ -195,11 +271,49 @@ export class AirPlayReceiver extends EventEmitter {
       : ctx.session.localAddress;
     const ports = await transport.start(bindHost);
     const media = { transport, ports };
-    ctx.session.state.media = media;
-    transport.on('video-frame', (frame) => this.emit('video-frame', { ...frame, session: ctx.session }));
-    transport.on('video-connection', (socket) => this.emit('video-connection', { socket, session: ctx.session }));
-    transport.on('event-connection', (socket) => this.emit('event-connection', { socket, session: ctx.session }));
-    transport.on('timing-packet', (packet) => this.emit('timing-packet', { ...packet, session: ctx.session }));
+    const session = ctx.session;
+    session.state.media = media;
+
+    const h264 = new H264StreamProcessor({
+      onCodec: (codec) => this.emit('video-codec', { ...codec, session }),
+      onVideo: (unit) => this.emit('video-data', { ...unit, session }),
+    });
+
+    transport.on('video-frame', (frame) => {
+      const payload = frame.type === MIRROR_PAYLOAD.VIDEO && session.state.videoDecryptor
+        ? session.state.videoDecryptor.decrypt(frame.payload)
+        : frame.payload;
+      const processedFrame = { ...frame, payload };
+      this.emit('video-frame', { ...processedFrame, session });
+      try {
+        h264.push(processedFrame);
+      } catch (error) {
+        this.emit('stream-error', { error, type: frame.type, session });
+      }
+    });
+    transport.on('audio-packet', (packet) => {
+      if (packet.payloadType !== AUDIO_PAYLOAD.DATA) {
+        this.emit('audio-packet', { ...packet, session });
+        return;
+      }
+      const decryptor = session.state.audio?.decryptor;
+      const payload = decryptor ? decryptor.decrypt(packet.payload) : packet.payload;
+      this.emit('audio-data', {
+        ...packet,
+        payload,
+        encrypted: !decryptor,
+        session,
+      });
+    });
+    transport.on('invalid-audio-packet', (packet) => {
+      this.emit('stream-error', { ...packet, type: 'audio-rtp', session });
+    });
+    transport.on('audio-control-packet', (packet) => {
+      this.emit('audio-control-packet', { ...packet, session });
+    });
+    transport.on('video-connection', (socket) => this.emit('video-connection', { socket, session }));
+    transport.on('event-connection', (socket) => this.emit('event-connection', { socket, session }));
+    transport.on('timing-packet', (packet) => this.emit('timing-packet', { ...packet, session }));
     transport.on('error', (error) => this.emit('error', error));
     return media;
   }

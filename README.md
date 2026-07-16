@@ -2,7 +2,7 @@
 
 开源、跨平台的无线投屏**接收端**软件（对标 AirServer）。把你的 Windows / macOS / Linux 电脑变成投屏接收器：iPhone/iPad 通过系统自带的"屏幕镜像"（AirPlay）、Android/Chrome 通过 Google Cast，即可把画面无线投到这台电脑上。
 
-> 状态：早期开发中。当前已实现 mDNS 服务发现、RTSP 控制通道、二进制 plist 编解码、AirPlay legacy 配对握手，以及 SETUP 媒体端口分配与镜像 TCP 帧接收。FairPlay 解密、音视频解码和渲染仍在开发。详见 [开发计划](docs/DEVELOPMENT_PLAN.md)。
+> 状态：早期开发中。当前已实现 mDNS 服务发现、RTSP 控制通道、二进制 plist 编解码、AirPlay legacy 配对、媒体端口分配、镜像 TCP/音频 RTP 接收、NTP timing 应答与 H.264 Annex-B 转换。真实 FairPlay 解密、音视频解码和渲染仍在开发。详见 [开发计划](docs/DEVELOPMENT_PLAN.md)。
 
 ## 快速开始
 

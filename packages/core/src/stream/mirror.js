@@ -1,6 +1,8 @@
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { EventEmitter } from 'node:events';
+import { buildTimingReply } from './timing.js';
+import { parseRtpPacket } from './rtp.js';
 
 export const MIRROR_HEADER_BYTES = 128;
 export const DEFAULT_MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -50,6 +52,8 @@ export class MirrorTransport extends EventEmitter {
   #videoServer = null;
   #eventServer = null;
   #timingSocket = null;
+  #audioSocket = null;
+  #audioControlSocket = null;
   #sockets = new Set();
   #maxFrameBytes;
 
@@ -62,17 +66,42 @@ export class MirrorTransport extends EventEmitter {
     if (this.#videoServer) throw new Error('Mirror transport already started');
     this.#videoServer = net.createServer((socket) => this.#acceptVideo(socket));
     this.#eventServer = net.createServer((socket) => this.#acceptEvent(socket));
+
+    // Timing requests are answered at the transport boundary to keep the
+    // sender's clock synchronization independent of the application layer.
     this.#timingSocket = dgram.createSocket('udp4');
-    this.#timingSocket.on('message', (message, remote) => this.emit('timing-packet', { message, remote }));
+    this.#timingSocket.on('message', (message, remote) => {
+      const reply = buildTimingReply(message);
+      if (reply) this.#timingSocket.send(reply, remote.port, remote.address);
+      this.emit('timing-packet', { message, remote, replied: Boolean(reply) });
+    });
     this.#timingSocket.on('error', (error) => this.emit('error', error));
 
+    this.#audioSocket = dgram.createSocket('udp4');
+    this.#audioSocket.on('message', (message, remote) => {
+      try {
+        this.emit('audio-packet', { ...parseRtpPacket(message), raw: message, remote });
+      } catch (error) {
+        this.emit('invalid-audio-packet', { error, message, remote });
+      }
+    });
+    this.#audioSocket.on('error', (error) => this.emit('error', error));
+
+    this.#audioControlSocket = dgram.createSocket('udp4');
+    this.#audioControlSocket.on('message', (message, remote) => {
+      this.emit('audio-control-packet', { message, remote });
+    });
+    this.#audioControlSocket.on('error', (error) => this.emit('error', error));
+
     try {
-      const [videoPort, eventPort, timingPort] = await Promise.all([
+      const [videoPort, eventPort, timingPort, audioPort, audioControlPort] = await Promise.all([
         listenTcp(this.#videoServer, host),
         listenTcp(this.#eventServer, host),
         bindUdp(this.#timingSocket, host),
+        bindUdp(this.#audioSocket, host),
+        bindUdp(this.#audioControlSocket, host),
       ]);
-      return { videoPort, eventPort, timingPort };
+      return { videoPort, eventPort, timingPort, audioPort, audioControlPort };
     } catch (error) {
       await this.close();
       throw error;
@@ -82,10 +111,18 @@ export class MirrorTransport extends EventEmitter {
   async close() {
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
-    const closers = [closeTcp(this.#videoServer), closeTcp(this.#eventServer), closeUdp(this.#timingSocket)];
+    const closers = [
+      closeTcp(this.#videoServer),
+      closeTcp(this.#eventServer),
+      closeUdp(this.#timingSocket),
+      closeUdp(this.#audioSocket),
+      closeUdp(this.#audioControlSocket),
+    ];
     this.#videoServer = null;
     this.#eventServer = null;
     this.#timingSocket = null;
+    this.#audioSocket = null;
+    this.#audioControlSocket = null;
     await Promise.all(closers);
   }
 
@@ -145,9 +182,12 @@ function closeTcp(server) {
 
 function closeUdp(socket) {
   if (!socket) return Promise.resolve();
-  try {
-    return new Promise((resolve) => socket.close(resolve));
-  } catch {
-    return Promise.resolve();
-  }
+  return new Promise((resolve) => {
+    try {
+      socket.close(resolve);
+    } catch {
+      // A socket whose bind failed is not yet running and cannot be closed.
+      resolve();
+    }
+  });
 }

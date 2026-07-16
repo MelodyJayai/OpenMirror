@@ -6,11 +6,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import crypto from 'node:crypto';
 import { AirPlayReceiver } from '../src/index.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
 import { rawEd25519PublicKey, x25519PublicFromRaw, ed25519PublicFromRaw } from '../src/crypto/pairing.js';
+import {
+  FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH, FP_REPLY2_LENGTH,
+} from '../src/crypto/fairplay.js';
 
 function connect(port) {
   return new Promise((resolve, reject) => {
@@ -103,6 +107,26 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     );
     assert.equal(step2.status, 200);
     await paired;
+
+    // fp-setup phase 1/2 wire state machine (default provider is shape-only).
+    const fp1Body = Buffer.alloc(FP_SETUP1_LENGTH);
+    FPLY_HEADER.copy(fp1Body);
+    fp1Body[4] = 3;
+    fp1Body[5] = 1;
+    fp1Body[6] = 1;
+    fp1Body[14] = 2;
+    const fp1 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 5', fp1Body);
+    assert.equal(fp1.status, 200);
+    assert.equal(fp1.body.length, FP_REPLY1_LENGTH);
+
+    const fp2Body = Buffer.alloc(FP_SETUP2_LENGTH);
+    FPLY_HEADER.copy(fp2Body);
+    fp2Body[4] = 3;
+    fp2Body[5] = 1;
+    fp2Body[6] = 3;
+    const fp2 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 6', fp2Body);
+    assert.equal(fp2.status, 200);
+    assert.equal(fp2.body.length, FP_REPLY2_LENGTH);
   } finally {
     client.end();
     await receiver.stop();
@@ -114,11 +138,15 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
   const { port } = await receiver.start();
   const client = await connect(port);
   let video;
+  let audio;
 
   try {
     const setupBody = encodeBplist({
       timingProtocol: 'NTP',
-      streams: [{ type: 110, streamConnectionID: 123456 }],
+      streams: [
+        { type: 110, streamConnectionID: 123456 },
+        { type: 96, audioFormat: 0x40000 },
+      ],
     });
     const setup = await client.request('SETUP rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 1', setupBody);
     assert.equal(setup.status, 200);
@@ -128,6 +156,9 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.equal(response.streams[0].type, 110);
     assert.equal(response.streams[0].streamConnectionID, 123456);
     assert.ok(response.streams[0].dataPort > 0);
+    assert.equal(response.streams[1].type, 96);
+    assert.ok(response.streams[1].dataPort > 0);
+    assert.ok(response.streams[1].controlPort > 0);
 
     const frameReceived = new Promise((resolve) => receiver.once('video-frame', resolve));
     video = net.connect(response.streams[0].dataPort, '127.0.0.1');
@@ -144,10 +175,24 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.equal(frame.timestamp, 777n);
     assert.deepEqual(frame.payload, payload);
 
+    const audioReceived = new Promise((resolve) => receiver.once('audio-data', resolve));
+    audio = dgram.createSocket('udp4');
+    const rtpHeader = Buffer.alloc(12);
+    rtpHeader[0] = 0x80;
+    rtpHeader[1] = 96;
+    rtpHeader.writeUInt16BE(7, 2);
+    const audioPayload = Buffer.from([4, 5, 6]);
+    audio.send(Buffer.concat([rtpHeader, audioPayload]), response.streams[1].dataPort, '127.0.0.1');
+    const audioPacket = await audioReceived;
+    assert.equal(audioPacket.sequence, 7);
+    assert.equal(audioPacket.encrypted, true);
+    assert.deepEqual(audioPacket.payload, audioPayload);
+
     const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2');
     assert.equal(teardown.status, 200);
   } finally {
     video?.destroy();
+    audio?.close();
     client.end();
     await receiver.stop();
   }

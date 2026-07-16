@@ -120,7 +120,7 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 | **M6 Google Cast** | mDNS `_googlecast._tcp`、TLS 8009、protobuf CastChannel、镜像 app | Android/Chrome 可投放 |
 | **M7 Miracast（评估）** | Windows 上依托 OS Wi-Fi Direct API 评估可行性 | 可行性报告 + 原型 |
 
-**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配；M4 已具备镜像 TCP 通道和 128 字节帧头的增量解析，并预留 event TCP 与 timing UDP 通道。下一步是 FairPlay 密钥交换/流解密、NTP 应答、H.264 解码渲染和音频 RTP。
+**当前实现进度**：M0、M1、M2 已完成；M3 已完成 pair-setup/pair-verify、SETUP 解析及媒体端口分配，并具备可注入 provider 的 FairPlay fp-setup 两阶段握手状态机及会话/流密钥派生；M4 协议层已具备镜像 TCP 帧增量解析、AES 视频/音频解密器、H.264 avcC 参数集解析与 AVCC→Annex-B 转换、音频 RTP 解包和重排序，以及 NTP timing 自动应答。**尚未完成**：真实 FairPlay 解密表（默认 provider 仅生成协议形状，不能与真机完成媒体密钥解密）、H.264/AAC 解码与渲染、M5 桌面应用与完整 RAOP。
 
 ---
 
@@ -134,7 +134,8 @@ _raop._tcp                     → fp-setup       → RECORD          → 时钟
 │       ├─ discovery/            dns.js（编解码）、responder.js（mDNS 应答器）、airplay.js（TXT 记录）
 │       ├─ plist/                bplist.js（bplist00 编解码）
 │       ├─ rtsp/                 parser.js（增量解析）、server.js（RTSP 服务器）
-│       ├─ crypto/               pairing.js（pair-setup/verify）
+│       ├─ crypto/               pairing.js（pair-setup/verify）、fairplay.js（fp-setup 握手）、stream.js（流密钥派生与解密）
+│       ├─ stream/               mirror.js（镜像 TCP/UDP 传输）、h264.js（AVCC→Annex-B）、rtp.js（音频 RTP）、timing.js（NTP 应答）
 │       └─ index.js              总入口 AirPlayReceiver
 ├─ apps/cli/                     命令行接收器（协议验证用）
 └─ test/ (packages/core/test)    单元测试

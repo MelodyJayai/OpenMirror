@@ -14,7 +14,12 @@
     "./rtsp-parser": "./src/rtsp/parser.js",
     "./rtsp-server": "./src/rtsp/server.js",
     "./pairing": "./src/crypto/pairing.js",
-    "./mirror-stream": "./src/stream/mirror.js"
+    "./fairplay": "./src/crypto/fairplay.js",
+    "./stream-crypto": "./src/crypto/stream.js",
+    "./mirror-stream": "./src/stream/mirror.js",
+    "./h264": "./src/stream/h264.js",
+    "./rtp": "./src/stream/rtp.js",
+    "./timing": "./src/stream/timing.js"
   },
   "engines": {
     "node": ">=20"

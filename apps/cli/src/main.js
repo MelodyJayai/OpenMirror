@@ -38,11 +38,29 @@ receiver.on('request', ({ method, uri, session }) => {
 receiver.on('paired', ({ session }) => {
   console.log(`[pair] ${session.remoteAddress} completed pair-verify`);
 });
+receiver.on('fp-setup', ({ session, phase }) => {
+  console.log(`[fairplay] ${session.remoteAddress} fp-setup phase ${phase}`);
+});
 receiver.on('setup', ({ session, ports }) => {
-  console.log(`[setup] ${session.remoteAddress} media ports: video TCP ${ports.videoPort}, event TCP ${ports.eventPort}, timing UDP ${ports.timingPort}`);
+  console.log(`[setup] ${session.remoteAddress} media ports: video TCP ${ports.videoPort}, event TCP ${ports.eventPort}, timing UDP ${ports.timingPort}, audio UDP ${ports.audioPort}/${ports.audioControlPort}`);
+});
+receiver.on('video-codec', ({ session, profile, level, sps, pps }) => {
+  console.log(`[codec] ${session.remoteAddress} H.264 profile=${profile} level=${level} sps=${sps.length} pps=${pps.length}`);
+});
+receiver.on('video-data', ({ session, annexB, keyframe, timestamp }) => {
+  if (values.verbose) console.log(`[h264] ${session.remoteAddress} ${annexB.length} bytes${keyframe ? ' (keyframe)' : ''} ts=${timestamp}`);
 });
 receiver.on('video-frame', ({ session, type, payloadLength, timestamp }) => {
   if (values.verbose) console.log(`[video] ${session.remoteAddress} type=${type} bytes=${payloadLength} timestamp=${timestamp}`);
+});
+receiver.on('audio-data', ({ session, sequence, payload, encrypted }) => {
+  if (values.verbose) console.log(`[audio] ${session.remoteAddress} seq=${sequence} bytes=${payload.length}${encrypted ? ' (encrypted)' : ''}`);
+});
+receiver.on('timing-packet', ({ remote, replied }) => {
+  if (values.verbose) console.log(`[timing] ${remote.address}:${remote.port}${replied ? ' -> replied' : ''}`);
+});
+receiver.on('stream-error', ({ session, error }) => {
+  if (values.verbose) console.log(`[stream] ${session?.remoteAddress ?? 'unknown'} pipeline: ${error.message}`);
 });
 receiver.on('teardown', ({ session }) => {
   console.log(`[teardown] ${session.remoteAddress} ended session`);
