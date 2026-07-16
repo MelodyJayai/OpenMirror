@@ -163,9 +163,12 @@ export class RtpSequencer {
   #retransmitIntervalPackets;
   #maxRetransmitAttempts;
   #maxRetransmitBatch;
+  #recentLimit;
   #next = null;
   #pending = new Map();
   #missing = new Map();
+  #recentEmitted = new Set();
+  #recentOrder = [];
   #stats = RtpSequencer.#emptyStats();
 
   constructor(onPacket, {
@@ -206,6 +209,7 @@ export class RtpSequencer {
     this.#retransmitIntervalPackets = retransmitIntervalPackets;
     this.#maxRetransmitAttempts = maxRetransmitAttempts;
     this.#maxRetransmitBatch = maxRetransmitBatch;
+    this.#recentLimit = Math.max(64, depth * 2);
   }
 
   get stats() {
@@ -228,9 +232,15 @@ export class RtpSequencer {
 
     let distance = (seq - this.#next + 0x10000) & 0xffff;
     if (distance >= 0x8000) {
-      this.#stats.late++;
-      if (packet.retransmitted) this.#stats.retransmittedLate++;
-      this.#emitEvent({ type: 'late', sequence: seq });
+      if (this.#recentEmitted.has(seq)) {
+        this.#stats.duplicates++;
+        if (packet.retransmitted) this.#stats.retransmittedDuplicates++;
+        this.#emitEvent({ type: 'duplicate', sequence: seq, reason: 'already-emitted' });
+      } else {
+        this.#stats.late++;
+        if (packet.retransmitted) this.#stats.retransmittedLate++;
+        this.#emitEvent({ type: 'late', sequence: seq });
+      }
       return;
     }
     if (this.#pending.has(seq)) {
@@ -247,6 +257,8 @@ export class RtpSequencer {
       this.#stats.discontinuities++;
       this.#pending.clear();
       this.#missing.clear();
+      this.#recentEmitted.clear();
+      this.#recentOrder = [];
       this.#next = seq;
       distance = 0;
       this.#emitEvent({ type: 'discontinuity', sequence: seq, skipped });
@@ -302,6 +314,8 @@ export class RtpSequencer {
     const missing = this.#missing.size;
     this.#pending.clear();
     this.#missing.clear();
+    this.#recentEmitted.clear();
+    this.#recentOrder = [];
     this.#next = null;
     if (resetStats) this.#stats = RtpSequencer.#emptyStats();
     this.#emitEvent({ type: 'reset', discarded, missing, resetStats });
@@ -314,6 +328,7 @@ export class RtpSequencer {
       this.#missing.delete(this.#next);
       this.#onPacket(packet);
       this.#stats.emitted++;
+      this.#rememberEmitted(this.#next);
       this.#next = (this.#next + 1) & 0xffff;
     }
   }
@@ -330,6 +345,14 @@ export class RtpSequencer {
       added.push(sequence);
     }
     this.#requestMissing(added);
+  }
+
+  #rememberEmitted(sequence) {
+    if (this.#recentEmitted.has(sequence)) return;
+    this.#recentEmitted.add(sequence);
+    this.#recentOrder.push(sequence);
+    if (this.#recentOrder.length <= this.#recentLimit) return;
+    this.#recentEmitted.delete(this.#recentOrder.shift());
   }
 
   #retryMissing() {

@@ -169,11 +169,12 @@ test('RtpSequencer reports duplicate and late packets and resets buffered state'
   });
 
   seq.push({ sequence: 20 });
+  seq.push({ sequence: 20 });
   seq.push({ sequence: 22 });
   seq.push({ sequence: 22 });
   seq.push({ sequence: 19 });
   assert.deepEqual(out, [20]);
-  assert.equal(seq.stats.duplicates, 1);
+  assert.equal(seq.stats.duplicates, 2);
   assert.equal(seq.stats.late, 1);
   assert.equal(seq.stats.pending, 1);
 
