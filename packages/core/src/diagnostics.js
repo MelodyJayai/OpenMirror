@@ -176,6 +176,11 @@ export class AirPlayDiagnostics extends EventEmitter {
       this.#advance(session, 'setup');
     });
     this.#listen('record', ({ session }) => this.#advance(session, 'recording'));
+    this.#listen('feedback', ({ session }) => {
+      const record = this.#recordFor(session);
+      record.counts.feedbacks++;
+      this.#milestone(record, 'firstFeedback');
+    });
     this.#listen('flush', ({ session }) => {
       const record = this.#recordFor(session);
       record.counts.flushes++;
@@ -355,6 +360,7 @@ export class AirPlayDiagnostics extends EventEmitter {
         audioDrops: 0,
         audioDroppedBytes: 0,
         streamErrors: 0,
+        feedbacks: 0,
         flushes: 0,
       },
       dropReasons: {},

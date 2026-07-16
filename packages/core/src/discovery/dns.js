@@ -62,6 +62,23 @@ export function decodeName(buf, offset) {
   return { name: labels.join('.'), next: next === -1 ? pos : next };
 }
 
+/** Encode a DNS-SD TXT map as the length-prefixed RDATA used by mDNS and /info. */
+export function encodeTxtRecord(data) {
+  const chunks = [];
+  for (const [key, value] of Object.entries(data)) {
+    const entry = value === true
+      ? Buffer.from(encoder.encode(key))
+      : Buffer.concat([
+          Buffer.from(encoder.encode(`${key}=`)),
+          Buffer.isBuffer(value) ? value : Buffer.from(encoder.encode(String(value))),
+        ]);
+    if (entry.length > 255) throw new Error(`TXT entry too long: ${key}`);
+    chunks.push(Buffer.from([entry.length]), entry);
+  }
+  if (chunks.length === 0) chunks.push(Buffer.from([0]));
+  return Buffer.concat(chunks);
+}
+
 function encodeRdata(record) {
   switch (record.type) {
     case TYPE.A: {
@@ -88,19 +105,7 @@ function encodeRdata(record) {
     }
     case TYPE.TXT: {
       // record.data: object of key -> string|Buffer|true
-      const chunks = [];
-      for (const [key, value] of Object.entries(record.data)) {
-        const entry = value === true
-          ? Buffer.from(encoder.encode(key))
-          : Buffer.concat([
-              Buffer.from(encoder.encode(`${key}=`)),
-              Buffer.isBuffer(value) ? value : Buffer.from(encoder.encode(String(value))),
-            ]);
-        if (entry.length > 255) throw new Error(`TXT entry too long: ${key}`);
-        chunks.push(Buffer.from([entry.length]), entry);
-      }
-      if (chunks.length === 0) chunks.push(Buffer.from([0]));
-      return Buffer.concat(chunks);
+      return encodeTxtRecord(record.data);
     }
     default:
       if (Buffer.isBuffer(record.data)) return record.data;

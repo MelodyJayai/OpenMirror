@@ -119,6 +119,8 @@ export class RtspServer extends EventEmitter {
     if (request.headers['cseq'] !== undefined) headers['CSeq'] = request.headers['cseq'];
 
     const protocol = request.version?.startsWith('HTTP/') ? 'HTTP/1.1' : 'RTSP/1.0';
-    ctx.socket.write(encodeResponse({ ...response, headers }, protocol));
+    const encoded = encodeResponse({ ...response, headers }, protocol);
+    if (response.close) ctx.socket.end(encoded);
+    else ctx.socket.write(encoded);
   }
 }

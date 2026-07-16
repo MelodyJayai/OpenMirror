@@ -7,6 +7,7 @@
 - iPhone/iPad 与接收端位于同一局域网，网络允许 mDNS（UDP 5353）和设备间 TCP/UDP 通信。
 - 接收器在 `_airplay._tcp`、`_raop._tcp` 与 `/info` 中统一使用经过真机验证的 legacy mirroring feature mask `0x5A7FFEE6`；不要为尚未实现的 HLS 或现代配对能力额外置位。
 - `_airplay` TXT 与 `/info` 必须返回同一个、由设备 ID 确定性生成的 UUID 格式 `pi`，并显式广播 `pw=false`；这可以避免 iOS 把同一接收器误判成未建立信任的新端点。
+- 初始 `GET /info` 的 `txtAirPlay`/`txtRAOP` qualifier 必须返回与 mDNS 广播相同的原始 TXT RDATA；完整 `/info` 使用 Apple 约定的 `deviceID`、`sourceVersion` 与状态/显示字段。
 - CLI 默认持久保存设备 ID 与 Ed25519 私有身份；连续两次启动应打印相同的 `device id`，且不应删除或共享身份文件。可用 `--identity <path>` 为隔离测试指定专用身份。
 - Node.js 20 或更高版本。
 - 已安装包含 `ffplay` 的 FFmpeg，并可从终端执行 `ffplay -version`。
@@ -82,6 +83,7 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 - AAC-ELD 有解密后的音频包，`encryptedAudioPackets` 为 0，有 `playback.audio.forwarded` 计数，并现场确认声音可闻。
 - 旋转后 `videoFormat.width/height/orientation/revision` 更新，播放自动恢复。
 - FLUSH、锁屏静默、异常 RTSP 断开和主动 TEARDOWN 均会回收播放器；重连产生同一匿名 peer 的递增 `reconnectIndex`。
+- iOS 的 `POST /feedback` 心跳计入 `counts.feedbacks`，首个心跳记录为 `milestones.firstFeedback`，用于区分仍活跃的控制会话与无心跳的异常断线。
 - `streamErrors` 不持续增长；RTP 报告包含乱序/重复/迟到/最终缺口，以及 `retransmitRequests`、`retransmittedReceived`、`retransmittedRecovered` 和实际控制报文发送统计。弱网出现丢包时应优先由 `0x55/0x56` 重传恢复，`gapsSkipped`/`retransmitUnrecovered` 不应持续增长。
 - iOS 启动 AAC-ELD 时的空 RTP 与 `00 68 34 00` 占位报文只推进序列号，并计入 `audioNoDataPackets`；它们不应计入已解密音频包、首个音频里程碑或延迟统计。
 - 延迟 p95、A/V 偏差和 drift ppm 应结合实际网络记录并用于后续调优。

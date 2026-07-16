@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   TYPE, encodeName, decodeName, encodeMessage, decodeMessage,
-  FLAG_RESPONSE, FLAG_AUTHORITATIVE,
+  encodeTxtRecord, FLAG_RESPONSE, FLAG_AUTHORITATIVE,
 } from '../src/discovery/dns.js';
 
 test('encodeName/decodeName roundtrip', () => {
@@ -83,6 +83,16 @@ test('TXT boolean-flag entries survive roundtrip', () => {
   }));
   assert.equal(decoded.answers[0].data.da, 'true');
   assert.equal(decoded.answers[0].data.flag, true);
+});
+
+test('encodeTxtRecord matches the TXT RDATA embedded in a DNS message', () => {
+  const data = { deviceid: 'AA:BB:CC:DD:EE:FF', pw: 'false', flag: true };
+  const txt = encodeTxtRecord(data);
+  const message = encodeMessage({
+    answers: [{ name: 'receiver.local', type: TYPE.TXT, data }],
+  });
+  const rdataLength = message.readUInt16BE(message.length - txt.length - 2);
+  assert.deepEqual(message.subarray(message.length - rdataLength), txt);
 });
 
 test('decodeMessage rejects truncated packets', () => {

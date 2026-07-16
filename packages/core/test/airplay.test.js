@@ -53,6 +53,7 @@ test('buildServices produces AirPlay + RAOP registrations with required TXT keys
     assert.ok(raop.txt[key], `raop TXT missing ${key}`);
   }
   assert.equal(raop.txt.ft, airplay.txt.features);
+  assert.equal(raop.txt.ek, undefined);
   assert.equal(raop.txt.pw, 'false');
   assert.equal(raop.txt.rhd, '5.6.0.0');
 });

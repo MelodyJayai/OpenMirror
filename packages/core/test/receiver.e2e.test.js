@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import {
   AUDIO_PAYLOAD,
   AirPlayReceiver,
+  buildServices,
   DEFAULT_FEATURES,
   deriveMirrorStreamKey,
   ntpNow,
@@ -18,6 +19,7 @@ import {
 } from '../src/index.js';
 import { RtspParser } from '../src/rtsp/parser.js';
 import { decodeBplist, encodeBplist } from '../src/plist/bplist.js';
+import { encodeTxtRecord } from '../src/discovery/dns.js';
 import { rawEd25519PublicKey, x25519PublicFromRaw, ed25519PublicFromRaw } from '../src/crypto/pairing.js';
 import {
   FPLY_HEADER, FP_SETUP1_LENGTH, FP_SETUP2_LENGTH, FP_REPLY1_LENGTH,
@@ -88,9 +90,45 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     assert.equal(dict.features, Number(DEFAULT_FEATURES));
     assert.equal(dict.pi, receiver.options.pairingId);
     assert.match(dict.pi, /^[0-9a-f-]{36}$/);
-    assert.ok(dict.deviceid);
+    assert.equal(dict.deviceID, receiver.options.deviceId);
+    assert.equal(dict.sourceVersion, '220.68');
+    assert.equal(dict.statusFlags, 68);
+    assert.equal(dict.initialVolume, 0);
+    assert.equal(dict.displays[0].width, 1920);
+    assert.equal(dict.displays[0].height, 1080);
+    assert.equal(dict.displays[0].refreshRate, 1 / 60);
     assert.equal(dict.pk.length, 32);
     assert.deepEqual(Buffer.from(dict.pk), receiver.identity.publicKeyRaw);
+
+    const qualified = await client.request(
+      'GET /info RTSP/1.0\r\nCSeq: 2\r\nContent-Type: application/x-apple-binary-plist',
+      encodeBplist({ qualifier: ['txtAirPlay'] }),
+    );
+    const qualifiedInfo = decodeBplist(qualified.body);
+    assert.deepEqual(Object.keys(qualifiedInfo), ['txtAirPlay']);
+    assert.ok(Buffer.isBuffer(qualifiedInfo.txtAirPlay));
+    const expectedServices = buildServices({
+      name: receiver.options.name,
+      deviceId: receiver.options.deviceId,
+      pairingId: receiver.options.pairingId,
+      publicKeyHex: receiver.identity.publicKeyHex,
+      airplayPort: port,
+      features: receiver.options.features,
+    });
+    assert.deepEqual(qualifiedInfo.txtAirPlay, encodeTxtRecord(expectedServices[0].txt));
+
+    const discoveryInfo = decodeBplist((await client.request(
+      'GET /info?txtAirPlay?txtRAOP RTSP/1.0',
+    )).body);
+    assert.deepEqual(discoveryInfo, {
+      txtAirPlay: encodeTxtRecord(expectedServices[0].txt),
+      txtRAOP: encodeTxtRecord(expectedServices[1].txt),
+    });
+
+    const options = await client.request('OPTIONS * RTSP/1.0\r\nCSeq: 3');
+    assert.equal(options.headers.public, (
+      'SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER'
+    ));
 
     // pair-setup
     const clientId = crypto.generateKeyPairSync('ed25519');
@@ -99,13 +137,13 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     const curveDer = clientCurve.publicKey.export({ format: 'der', type: 'spki' });
     const clientCurveRaw = Buffer.from(curveDer.subarray(curveDer.length - 32));
 
-    const setup = await client.request('POST /pair-setup RTSP/1.0\r\nCSeq: 2', clientEdRaw);
+    const setup = await client.request('POST /pair-setup RTSP/1.0\r\nCSeq: 4', clientEdRaw);
     assert.equal(setup.status, 200);
     assert.equal(setup.body.length, 32);
 
     // pair-verify step 1
     const step1 = await client.request(
-      'POST /pair-verify RTSP/1.0\r\nCSeq: 3',
+      'POST /pair-verify RTSP/1.0\r\nCSeq: 5',
       Buffer.concat([Buffer.from([1, 0, 0, 0]), clientCurveRaw, clientEdRaw]),
     );
     assert.equal(step1.status, 200);
@@ -134,7 +172,7 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     const cipher = crypto.createCipheriv('aes-128-ctr', aesKey, aesIv);
     cipher.update(Buffer.alloc(64));
     const step2 = await client.request(
-      'POST /pair-verify RTSP/1.0\r\nCSeq: 4',
+      'POST /pair-verify RTSP/1.0\r\nCSeq: 6',
       Buffer.concat([Buffer.from([0, 0, 0, 0]), cipher.update(clientSig)]),
     );
     assert.equal(step2.status, 200);
@@ -147,7 +185,7 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     fp1Body[5] = 1;
     fp1Body[6] = 1;
     fp1Body[14] = 2;
-    const fp1 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 5', fp1Body);
+    const fp1 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 7', fp1Body);
     assert.equal(fp1.status, 200);
     assert.equal(fp1.body.length, FP_REPLY1_LENGTH);
 
@@ -156,7 +194,7 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     fp2Body[4] = 3;
     fp2Body[5] = 1;
     fp2Body[6] = 3;
-    const fp2 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 6', fp2Body);
+    const fp2 = await client.request('POST /fp-setup RTSP/1.0\r\nCSeq: 8', fp2Body);
     assert.equal(fp2.status, 200);
     assert.equal(fp2.body.length, FP_REPLY2_LENGTH);
     assert.deepEqual(fp2.body.subarray(0, 12), FP_SETUP2_REPLY_HEADER);
@@ -206,6 +244,19 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.equal(response.streams[1].type, 96);
     assert.ok(response.streams[1].dataPort > 0);
     assert.ok(response.streams[1].controlPort > 0);
+
+    const record = await client.request(
+      'RECORD rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2',
+    );
+    assert.equal(record.status, 200);
+    assert.equal(record.headers['audio-latency'], '11025');
+    assert.equal(record.headers['audio-jack-status'], 'connected; type=analog');
+
+    const feedbackReceived = new Promise((resolve) => receiver.once('feedback', resolve));
+    const feedback = await client.request('POST /feedback RTSP/1.0\r\nCSeq: 3');
+    assert.equal(feedback.status, 200);
+    const feedbackEvent = await feedbackReceived;
+    assert.ok(Number.isFinite(feedbackEvent.receivedAt));
 
     const frameReceived = new Promise((resolve) => receiver.once('video-frame', resolve));
     video = net.connect(response.streams[0].dataPort, '127.0.0.1');
@@ -351,7 +402,7 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.deepEqual(reordered, [11, 12]);
 
     const flushed = new Promise((resolve) => receiver.once('flush', resolve));
-    const flush = await client.request('FLUSH rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 2');
+    const flush = await client.request('FLUSH rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 4');
     assert.equal(flush.status, 200);
     await flushed;
 
@@ -389,8 +440,11 @@ test('AirPlayReceiver SETUP allocates a media transport and forwards mirror fram
     assert.equal(event.uri, '/event');
     assert.deepEqual(event.payload, { type: 'playbackState', state: 'playing' });
 
-    const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 3');
+    const sessionClosed = new Promise((resolve) => receiver.once('session-closed', resolve));
+    const teardown = await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 5');
     assert.equal(teardown.status, 200);
+    assert.equal(teardown.headers.connection, 'close');
+    await sessionClosed;
   } finally {
     video?.destroy();
     audio?.close();

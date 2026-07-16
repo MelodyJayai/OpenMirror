@@ -5,6 +5,7 @@
 
 import { EventEmitter } from 'node:events';
 import { MdnsResponder } from './discovery/responder.js';
+import { encodeTxtRecord } from './discovery/dns.js';
 import {
   buildServices, pairingIdentifier, randomDeviceId, DEFAULT_FEATURES,
 } from './discovery/airplay.js';
@@ -72,6 +73,7 @@ export class AirPlayReceiver extends EventEmitter {
   #options;
   #fairPlayProvider;
   #mediaClosures = new Set();
+  #serviceTxt = null;
 
   constructor(options = {}) {
     super();
@@ -127,14 +129,19 @@ export class AirPlayReceiver extends EventEmitter {
     const port = await this.#rtsp.listen(this.#options.port);
     this.#options.port = port;
 
-    for (const service of buildServices({
+    const services = buildServices({
       name: this.#options.name,
       deviceId: this.#options.deviceId,
       pairingId: this.#options.pairingId,
       publicKeyHex: this.#identity.publicKeyHex,
       airplayPort: port,
       features: this.#options.features,
-    })) {
+    });
+    this.#serviceTxt = {
+      txtAirPlay: encodeTxtRecord(services[0].txt),
+      txtRAOP: encodeTxtRecord(services[1].txt),
+    };
+    for (const service of services) {
       this.#responder.addService(service);
     }
     await this.#responder.start();
@@ -159,7 +166,7 @@ export class AirPlayReceiver extends EventEmitter {
     const rtsp = this.#rtsp;
 
     rtsp.handle('GET', '/info', (request, ctx) => {
-      const info = this.#deviceInfo();
+      const info = this.#deviceInfo(request);
       return {
         status: 200,
         headers: { 'Content-Type': 'application/x-apple-binary-plist' },
@@ -202,12 +209,17 @@ export class AirPlayReceiver extends EventEmitter {
       };
     });
 
-    rtsp.handle('POST', '/feedback', () => ({ status: 200 }));
+    rtsp.handle('POST', '/feedback', (request, ctx) => {
+      const receivedAt = Date.now();
+      ctx.session.state.lastFeedbackAt = receivedAt;
+      this.emit('feedback', { session: ctx.session, receivedAt });
+      return { status: 200 };
+    });
 
     rtsp.handle('OPTIONS', (request) => ({
       status: 200,
       headers: {
-        Public: 'ANNOUNCE, SETUP, RECORD, PAUSE, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER, POST, GET',
+        Public: 'SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER',
       },
     }));
 
@@ -264,7 +276,13 @@ export class AirPlayReceiver extends EventEmitter {
     rtsp.handle('RECORD', (request, ctx) => {
       ctx.session.state.recording = true;
       this.emit('record', { session: ctx.session });
-      return { status: 200, headers: { 'Audio-Latency': '11025' } };
+      return {
+        status: 200,
+        headers: {
+          'Audio-Latency': '11025',
+          'Audio-Jack-Status': 'connected; type=analog',
+        },
+      };
     });
     rtsp.handle('SET_PARAMETER', () => ({ status: 200 }));
     rtsp.handle('GET_PARAMETER', (request) => {
@@ -299,7 +317,11 @@ export class AirPlayReceiver extends EventEmitter {
     rtsp.handle('TEARDOWN', async (request, ctx) => {
       await this.#closeMedia(ctx.session, 'teardown');
       this.emit('teardown', { session: ctx.session });
-      return { status: 200 };
+      return {
+        status: 200,
+        headers: { Connection: 'close' },
+        close: true,
+      };
     });
   }
 
@@ -575,29 +597,63 @@ export class AirPlayReceiver extends EventEmitter {
     await media.transport.close();
   }
 
-  #deviceInfo() {
+  #requestedInfoTxt(request) {
+    const requested = new Set();
+    const contentType = request.headers['content-type'] ?? '';
+    if (contentType.toLowerCase().includes('application/x-apple-binary-plist')) {
+      try {
+        const payload = decodeBplist(request.body);
+        for (const qualifier of payload?.qualifier ?? []) {
+          if (qualifier === 'txtAirPlay' || qualifier === 'txtRAOP') requested.add(qualifier);
+        }
+      } catch {
+        // A malformed qualified request receives an empty plist rather than
+        // accidentally exposing the unrelated full /info response.
+      }
+    }
+    const query = request.uri.includes('?') ? request.uri.slice(request.uri.indexOf('?') + 1) : '';
+    if (query.includes('txtAirPlay')) requested.add('txtAirPlay');
+    if (query.includes('txtRAOP')) requested.add('txtRAOP');
     return {
-      deviceid: this.#options.deviceId,
+      qualified: Boolean(contentType) || requested.size > 0,
+      requested,
+    };
+  }
+
+  #deviceInfo(request) {
+    const { qualified, requested } = this.#requestedInfoTxt(request);
+    if (qualified) {
+      const info = {};
+      for (const key of requested) {
+        if (this.#serviceTxt?.[key]) info[key] = this.#serviceTxt[key];
+      }
+      return info;
+    }
+    return {
+      deviceID: this.#options.deviceId,
       features: Number(this.#options.features & 0xffffffffn) +
         Number(this.#options.features >> 32n) * 2 ** 32,
       model: 'AppleTV3,2',
       name: this.#options.name,
-      srcvers: '220.68',
+      sourceVersion: '220.68',
       pi: this.#options.pairingId,
       pk: this.#identity.publicKeyRaw,
       vv: 2,
-      statusFlags: 4,
+      statusFlags: 68,
       keepAliveLowPower: 1,
       keepAliveSendStatsAsBody: 1,
       macAddress: this.#options.deviceId,
+      initialVolume: 0,
       displays: [{
         primaryInputDevice: 1,
         rotation: false,
         widthPhysical: 0,
         heightPhysical: 0,
+        width: 1920,
+        height: 1080,
         widthPixels: 1920,
         heightPixels: 1080,
-        refreshRate: 60,
+        refreshRate: 1 / 60,
         maxFPS: 60,
         overscanned: false,
         features: 14,

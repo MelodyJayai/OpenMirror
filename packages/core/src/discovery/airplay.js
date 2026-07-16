@@ -134,7 +134,6 @@ export function buildServices(identity) {
     cn: '0,1,2,3',      // codecs: PCM, ALAC, AAC-LC, AAC-ELD
     da: 'true',
     et: '0,3,5',        // encryption types: none, FairPlay, FairPlay SAPv2.5
-    ek: '1',
     ft: featuresTxt,
     am: model,
     md: '0,1,2',        // metadata: text, artwork, progress
