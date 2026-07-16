@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
 import {
   AUDIO_PAYLOAD,
   AirPlayReceiver,
+  DEFAULT_FEATURES,
   deriveMirrorStreamKey,
   ntpNow,
   parseAudioRetransmitRequest,
@@ -84,6 +85,7 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     assert.equal(info.status, 200);
     const dict = decodeBplist(info.body);
     assert.equal(dict.name, 'E2ETest');
+    assert.equal(dict.features, Number(DEFAULT_FEATURES));
     assert.ok(dict.deviceid);
     assert.equal(dict.pk.length, 32);
     assert.deepEqual(Buffer.from(dict.pk), receiver.identity.publicKeyRaw);

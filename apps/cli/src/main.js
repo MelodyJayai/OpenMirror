@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util';
 import {
   AirPlayDiagnostics,
   AirPlayReceiver,
+  formatFeatures,
   isMirrorVideoSuspended,
   isUsableLanIPv4,
   localIPv4Addresses,
@@ -122,6 +123,12 @@ function writeDiagnostic(type, payload) {
 writeDiagnostic('run-start', {
   schemaVersion: 1,
   startedAt: new Date().toISOString(),
+  capabilityProfile: {
+    featureMask: formatFeatures(receiver.options.features),
+    pairing: 'legacy',
+    video: 'H264',
+    audio: 'AAC-ELD',
+  },
 });
 
 const diagnostics = new AirPlayDiagnostics(receiver, {

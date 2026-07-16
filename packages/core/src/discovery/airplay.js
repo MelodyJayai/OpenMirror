@@ -50,30 +50,16 @@ export const FEATURES = {
   SUPPORTS_SET_PEERS_EXTENDED_MESSAGE: 1n << 52n,
 };
 
-// The classic mirroring-receiver feature set used by UxPlay/RPiPlay-style
-// receivers: screen mirroring + audio + FairPlay v2.5 + legacy pairing.
-export const DEFAULT_FEATURES =
-  FEATURES.VIDEO |
-  FEATURES.PHOTO |
-  FEATURES.VIDEO_FAIRPLAY |
-  FEATURES.VIDEO_HTTP_LIVE_STREAMS |
-  FEATURES.SLIDESHOW |
-  FEATURES.SCREEN |
-  FEATURES.SCREEN_ROTATE |
-  FEATURES.AUDIO |
-  FEATURES.AUDIO_REDUNDANT |
-  FEATURES.FPS_APV2P5_AES_GCM |
-  FEATURES.PHOTO_CACHING |
-  FEATURES.AUTHENTICATION_4 |
-  FEATURES.METADATA_TEXT |
-  FEATURES.METADATA_ARTWORK |
-  FEATURES.METADATA_PROGRESS |
-  FEATURES.AUDIO_FORMAT_1 |
-  FEATURES.AUDIO_FORMAT_2 |
-  FEATURES.AUDIO_FORMAT_3 |
-  FEATURES.AUDIO_FORMAT_4 |
-  FEATURES.HAS_UNIFIED_ADVERTISER_INFO |
-  FEATURES.SUPPORTS_LEGACY_PAIRING;
+/**
+ * Exact legacy-mirroring capability mask used by current UxPlay receivers.
+ *
+ * Do not derive this from only the named/public feature bits above: several
+ * undocumented compatibility bits (6, 10, 22, 25 and 28) are required by
+ * current iOS senders, while advertising unsupported Video/HLS or ScreenRotate
+ * changes the sender's negotiation path. Bit 27 selects legacy pair-verify and
+ * bit 30 advertises RAOP on the same control port.
+ */
+export const DEFAULT_FEATURES = 0x5A7FFEE6n;
 
 /** Format the 64-bit feature mask as AirPlay's "0xLOW,0xHIGH" TXT syntax. */
 export function formatFeatures(features) {

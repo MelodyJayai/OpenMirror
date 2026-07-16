@@ -22,6 +22,11 @@ test('formatFeatures splits the 64-bit mask into low,high hex', () => {
   assert.equal(formatFeatures((1n << 40n) | 0xe6n), '0xE6,0x100');
 });
 
+test('default features match the true-device legacy mirroring profile', () => {
+  assert.equal(DEFAULT_FEATURES, 0x5A7FFEE6n);
+  assert.equal(formatFeatures(DEFAULT_FEATURES), '0x5A7FFEE6');
+});
+
 test('buildServices produces AirPlay + RAOP registrations with required TXT keys', () => {
   const services = buildServices({
     name: 'TestMirror',
@@ -36,11 +41,13 @@ test('buildServices produces AirPlay + RAOP registrations with required TXT keys
   for (const key of ['deviceid', 'features', 'model', 'pk', 'srcvers']) {
     assert.ok(airplay.txt[key], `airplay TXT missing ${key}`);
   }
+  assert.equal(airplay.txt.features, '0x5A7FFEE6');
   assert.equal(raop.type, '_raop._tcp.local');
   assert.equal(raop.name, 'AABBCCDDEEFF@TestMirror');
   for (const key of ['ch', 'cn', 'et', 'ft', 'pk', 'tp']) {
     assert.ok(raop.txt[key], `raop TXT missing ${key}`);
   }
+  assert.equal(raop.txt.ft, airplay.txt.features);
 });
 
 test('randomDeviceId returns a locally-administered unicast MAC', () => {

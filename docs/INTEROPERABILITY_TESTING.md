@@ -5,6 +5,7 @@
 ## 准备
 
 - iPhone/iPad 与接收端位于同一局域网，网络允许 mDNS（UDP 5353）和设备间 TCP/UDP 通信。
+- 接收器在 `_airplay._tcp`、`_raop._tcp` 与 `/info` 中统一使用经过真机验证的 legacy mirroring feature mask `0x5A7FFEE6`；不要为尚未实现的 HLS 或现代配对能力额外置位。
 - Node.js 20 或更高版本。
 - 已安装包含 `ffplay` 的 FFmpeg，并可从终端执行 `ffplay -version`。
 - 首次运行若 Windows/macOS 弹出防火墙提示，应允许当前局域网访问。
@@ -85,4 +86,4 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 
 ## 诊断数据说明
 
-JSONL 报告只记录匿名 `runId` / `peer-N` / `session-N`、阶段、计数、格式、统计摘要、现场确认布尔值和脱敏错误文本。重复使用同一路径时，验证器只分析最后一个 `run-start` 之后的记录。它不会记录 IPv4/IPv6 地址、设备名、原始 RTSP 头/体、媒体负载、配对秘密、AES 密钥或 PlayFair 消息内容，因此可用于提交兼容性问题。若问题仍需抓包，应在获得网络参与者授权后单独采集并自行脱敏。
+JSONL 报告只记录匿名 `runId` / `peer-N` / `session-N`、非敏感 capability profile、阶段、计数、格式、统计摘要、现场确认布尔值和脱敏错误文本。`run-start.capabilityProfile.featureMask` 可用于确认实际测试构建广播了预期的 feature mask。重复使用同一路径时，验证器只分析最后一个 `run-start` 之后的记录。它不会记录 IPv4/IPv6 地址、设备名、原始 RTSP 头/体、媒体负载、配对秘密、AES 密钥或 PlayFair 消息内容，因此可用于提交兼容性问题。若问题仍需抓包，应在获得网络参与者授权后单独采集并自行脱敏。
