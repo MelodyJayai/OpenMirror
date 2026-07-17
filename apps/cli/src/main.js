@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // OpenMirror interoperability receiver and diagnostic harness.
 
-import { createWriteStream, existsSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { openDiagnosticsWriter } from './diagnostics-writer.js';
 import {
   defaultReceiverIdentityPath,
   loadOrCreateReceiverIdentity,
@@ -121,7 +121,7 @@ const receiver = new AirPlayReceiver({
 });
 
 let diagnosticsPath = null;
-let diagnosticsStream = null;
+let diagnosticsWriter = null;
 const diagnosticsRunId = randomUUID();
 const configuredDiagnostics = values.diagnostics ?? process.env.OPENMIRROR_DIAGNOSTICS;
 const stopRequestPath = process.env.OPENMIRROR_STOP_FILE
@@ -129,28 +129,31 @@ const stopRequestPath = process.env.OPENMIRROR_STOP_FILE
   : null;
 if (configuredDiagnostics) {
   diagnosticsPath = resolve(configuredDiagnostics);
-  await mkdir(dirname(diagnosticsPath), { recursive: true });
-  diagnosticsStream = createWriteStream(diagnosticsPath, { flags: 'a' });
-  diagnosticsStream.on('error', (error) => {
-    console.error(`[diagnostics] ${error.message}`);
-  });
+  try {
+    diagnosticsWriter = await openDiagnosticsWriter(diagnosticsPath, {
+      runId: diagnosticsRunId,
+      runStart: {
+        schemaVersion: 1,
+        startedAt: new Date().toISOString(),
+        capabilityProfile: {
+          featureMask: formatFeatures(receiver.options.features),
+          pairing: 'legacy',
+          identity: 'persistent-v1',
+          video: 'H264',
+          audio: 'AAC-ELD',
+        },
+      },
+      onError: (error) => console.error(`[diagnostics] ${error.message}`),
+    });
+  } catch (error) {
+    console.error(`[diagnostics] Cannot initialize ${diagnosticsPath}: ${error.message}`);
+    process.exit(2);
+  }
 }
 
 function writeDiagnostic(type, payload) {
-  diagnosticsStream?.write(`${JSON.stringify({ type, runId: diagnosticsRunId, ...payload })}\n`);
+  diagnosticsWriter?.write(type, payload);
 }
-
-writeDiagnostic('run-start', {
-  schemaVersion: 1,
-  startedAt: new Date().toISOString(),
-  capabilityProfile: {
-    featureMask: formatFeatures(receiver.options.features),
-    pairing: 'legacy',
-    identity: 'persistent-v1',
-    video: 'H264',
-    audio: 'AAC-ELD',
-  },
-});
 
 const diagnostics = new AirPlayDiagnostics(receiver, {
   intervalMs: options.statsIntervalMs,
@@ -597,9 +600,7 @@ async function stop() {
   const finalSnapshot = diagnostics.snapshot();
   writeDiagnostic('final-snapshot', finalSnapshot);
   diagnostics.close();
-  if (diagnosticsStream) {
-    await new Promise((resolveClose) => diagnosticsStream.end(resolveClose));
-  }
+  await diagnosticsWriter?.close();
 }
 
 if (stopRequestPath) {

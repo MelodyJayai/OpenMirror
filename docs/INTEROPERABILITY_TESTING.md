@@ -93,3 +93,4 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 ## 诊断数据说明
 
 JSONL 报告只记录匿名 `runId` / `peer-N` / `session-N`、非敏感 capability profile、阶段、计数、格式、统计摘要、现场确认布尔值和脱敏错误文本。`run-start.capabilityProfile.featureMask` 可用于确认实际测试构建广播了预期的 feature mask。重复使用同一路径时，验证器只分析最后一个 `run-start` 之后的记录。它不会记录 IPv4/IPv6 地址、设备名、原始 RTSP 头/体、媒体负载、配对秘密、AES 密钥或 PlayFair 消息内容，因此可用于提交兼容性问题。若问题仍需抓包，应在获得网络参与者授权后单独采集并自行脱敏。
+CLI 会在启动网络服务前同步追加 `run-start`；即使管理员终端随后被强制关闭，报告也应保留本次运行 ID 与 capability profile，而不是成为 0 字节文件。
