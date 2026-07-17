@@ -283,8 +283,9 @@ export class FfplayAudioSink extends EventEmitter {
       return;
     }
     if (delay > 1) {
+      // Keep the event loop alive while packets are queued: an unref()ed
+      // pacing timer lets Node exit before pending audio is forwarded.
       this.#timer = setTimeout(() => this.#schedule(), delay);
-      this.#timer.unref?.();
       return;
     }
     this.#queue.shift();
