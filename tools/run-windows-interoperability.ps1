@@ -11,6 +11,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'windows-firewall-rules.ps1')
+
 function Test-UsableLanAddress {
   param([string]$Address)
 
@@ -25,6 +27,11 @@ function Test-UsableLanAddress {
     return $false
   }
   return $true
+}
+
+$staleFirewallRulesRemoved = Remove-StaleOpenMirrorFirewallRules
+if ($staleFirewallRulesRemoved -gt 0) {
+  Write-Host "Removed $staleFirewallRulesRemoved stale OpenMirror firewall rule(s)."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -138,6 +145,7 @@ try {
     -Program $node `
     -Protocol TCP `
     -RemoteAddress LocalSubnet `
+    -Group 'OpenMirror Interop' `
     -Profile Any | Out-Null
   New-NetFirewallRule `
     -DisplayName $ruleNames[1] `
@@ -147,6 +155,7 @@ try {
     -Program $node `
     -Protocol UDP `
     -RemoteAddress LocalSubnet `
+    -Group 'OpenMirror Interop' `
     -Profile Any | Out-Null
 
   $startInfo = New-Object System.Diagnostics.ProcessStartInfo
