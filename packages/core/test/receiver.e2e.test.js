@@ -93,7 +93,16 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     assert.equal(dict.deviceID, receiver.options.deviceId);
     assert.equal(dict.sourceVersion, '220.68');
     assert.equal(dict.statusFlags, 68);
+    assert.equal(dict.keepAliveSendStatsAsBody, true);
     assert.equal(dict.initialVolume, 0);
+    assert.deepEqual(dict.audioFormats, [
+      { type: 100, audioInputFormats: 0x3fffffc, audioOutputFormats: 0x3fffffc },
+      { type: 101, audioInputFormats: 0x3fffffc, audioOutputFormats: 0x3fffffc },
+    ]);
+    assert.deepEqual(dict.audioLatencies, [
+      { type: 100, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: false },
+      { type: 101, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: false },
+    ]);
     assert.equal(dict.displays[0].width, 1920);
     assert.equal(dict.displays[0].height, 1080);
     assert.equal(dict.displays[0].refreshRate, 1 / 60);
@@ -120,10 +129,15 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     const discoveryInfo = decodeBplist((await client.request(
       'GET /info?txtAirPlay?txtRAOP RTSP/1.0',
     )).body);
-    assert.deepEqual(discoveryInfo, {
-      txtAirPlay: encodeTxtRecord(expectedServices[0].txt),
-      txtRAOP: encodeTxtRecord(expectedServices[1].txt),
-    });
+    assert.deepEqual(discoveryInfo.txtAirPlay, encodeTxtRecord(expectedServices[0].txt));
+    assert.deepEqual(discoveryInfo.txtRAOP, encodeTxtRecord(expectedServices[1].txt));
+    assert.equal(discoveryInfo.deviceID, receiver.options.deviceId);
+    assert.equal(discoveryInfo.sourceVersion, '220.68');
+    assert.equal(discoveryInfo.keepAliveSendStatsAsBody, true);
+    assert.equal(discoveryInfo.initialVolume, undefined);
+    assert.equal(discoveryInfo.audioFormats, undefined);
+    assert.equal(discoveryInfo.audioLatencies, undefined);
+    assert.equal(discoveryInfo.displays, undefined);
 
     const options = await client.request('OPTIONS * RTSP/1.0\r\nCSeq: 3');
     assert.equal(options.headers.public, (

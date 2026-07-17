@@ -600,6 +600,7 @@ export class AirPlayReceiver extends EventEmitter {
   #requestedInfoTxt(request) {
     const requested = new Set();
     const contentType = request.headers['content-type'] ?? '';
+    const hasCseq = request.headers.cseq !== undefined;
     if (contentType.toLowerCase().includes('application/x-apple-binary-plist')) {
       try {
         const payload = decodeBplist(request.body);
@@ -611,25 +612,30 @@ export class AirPlayReceiver extends EventEmitter {
         // accidentally exposing the unrelated full /info response.
       }
     }
-    const query = request.uri.includes('?') ? request.uri.slice(request.uri.indexOf('?') + 1) : '';
-    if (query.includes('txtAirPlay')) requested.add('txtAirPlay');
-    if (query.includes('txtRAOP')) requested.add('txtRAOP');
+    if (!hasCseq) {
+      const query = request.uri.includes('?')
+        ? request.uri.slice(request.uri.indexOf('?') + 1)
+        : '';
+      if (query.includes('txtAirPlay')) requested.add('txtAirPlay');
+      if (query.includes('txtRAOP')) requested.add('txtRAOP');
+    }
     return {
-      qualified: Boolean(contentType) || requested.size > 0,
+      qualified: Boolean(contentType),
+      hasCseq,
       requested,
     };
   }
 
   #deviceInfo(request) {
-    const { qualified, requested } = this.#requestedInfoTxt(request);
-    if (qualified) {
-      const info = {};
-      for (const key of requested) {
-        if (this.#serviceTxt?.[key]) info[key] = this.#serviceTxt[key];
-      }
-      return info;
+    const { qualified, hasCseq, requested } = this.#requestedInfoTxt(request);
+    const requestedTxt = {};
+    for (const key of requested) {
+      if (this.#serviceTxt?.[key]) requestedTxt[key] = this.#serviceTxt[key];
     }
-    return {
+    if (qualified) {
+      return requestedTxt;
+    }
+    const basic = {
       deviceID: this.#options.deviceId,
       features: Number(this.#options.features & 0xffffffffn) +
         Number(this.#options.features >> 32n) * 2 ** 32,
@@ -641,8 +647,13 @@ export class AirPlayReceiver extends EventEmitter {
       vv: 2,
       statusFlags: 68,
       keepAliveLowPower: 1,
-      keepAliveSendStatsAsBody: 1,
+      keepAliveSendStatsAsBody: true,
       macAddress: this.#options.deviceId,
+    };
+    if (!hasCseq) return { ...requestedTxt, ...basic };
+
+    return {
+      ...basic,
       initialVolume: 0,
       displays: [{
         primaryInputDevice: 1,
@@ -664,8 +675,8 @@ export class AirPlayReceiver extends EventEmitter {
         { type: 101, audioInputFormats: 0x3fffffc, audioOutputFormats: 0x3fffffc },
       ],
       audioLatencies: [
-        { type: 100, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: 400000 },
-        { type: 101, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: 400000 },
+        { type: 100, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: false },
+        { type: 101, audioType: 'default', inputLatencyMicros: 0, outputLatencyMicros: false },
       ],
     };
   }

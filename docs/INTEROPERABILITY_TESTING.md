@@ -7,7 +7,7 @@
 - iPhone/iPad 与接收端位于同一局域网，网络允许 mDNS（UDP 5353）和设备间 TCP/UDP 通信。
 - 接收器在 `_airplay._tcp`、`_raop._tcp` 与 `/info` 中统一使用经过真机验证的 legacy mirroring feature mask `0x5A7FFEE6`；不要为尚未实现的 HLS 或现代配对能力额外置位。
 - `_airplay` TXT 与 `/info` 必须返回同一个、由设备 ID 确定性生成的 UUID 格式 `pi`，并显式广播 `pw=false`；这可以避免 iOS 把同一接收器误判成未建立信任的新端点。
-- 初始 `GET /info` 的 `txtAirPlay`/`txtRAOP` qualifier 必须返回与 mDNS 广播相同的原始 TXT RDATA；完整 `/info` 使用 Apple 约定的 `deviceID`、`sourceVersion` 与状态/显示字段。
+- 初始 `GET /info` 的 `txtAirPlay`/`txtRAOP` qualifier 必须返回与 mDNS 广播相同的原始 TXT RDATA；完整 `/info` 使用 Apple 约定的 `deviceID`、`sourceVersion`、音频能力与状态/显示字段。无 `CSeq` 的 BLE 发现响应还必须在 TXT RDATA 之外包含基础设备字段，但不包含完整显示/音频数组。
 - CLI 默认持久保存设备 ID 与 Ed25519 私有身份；连续两次启动应打印相同的 `device id`，且不应删除或共享身份文件。可用 `--identity <path>` 为隔离测试指定专用身份。
 - Node.js 20 或更高版本。
 - 已安装包含 `ffplay` 的 FFmpeg，并可从终端执行 `ffplay -version`。
