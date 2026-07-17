@@ -181,6 +181,11 @@ export class AirPlayDiagnostics extends EventEmitter {
       record.counts.feedbacks++;
       this.#milestone(record, 'firstFeedback');
     });
+    this.#listen('feedback-timeout', ({ session, timeoutMs, idleForMs }) => {
+      const record = this.#recordFor(session);
+      record.counts.feedbackTimeouts++;
+      this.#mark(record, 'feedback-timeout', this.#clock(), { timeoutMs, idleForMs });
+    });
     this.#listen('flush', ({ session }) => {
       const record = this.#recordFor(session);
       record.counts.flushes++;
@@ -361,6 +366,7 @@ export class AirPlayDiagnostics extends EventEmitter {
         audioDroppedBytes: 0,
         streamErrors: 0,
         feedbacks: 0,
+        feedbackTimeouts: 0,
         flushes: 0,
       },
       dropReasons: {},

@@ -104,6 +104,7 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
   receiver.emit('audio-retransmitted-packet', { session, sequence: 2 });
   receiver.emit('feedback', { session, receivedAt: now });
   receiver.emit('feedback', { session, receivedAt: now });
+  receiver.emit('feedback-timeout', { session, timeoutMs: 15000, idleForMs: 15002 });
   receiver.emit('clock-sync', {
     session,
     clock: { offsetMs: 10, roundTripMs: 2 },
@@ -137,7 +138,14 @@ test('AirPlayDiagnostics produces redacted JSON-safe interoperability metrics', 
   assert.equal(item.counts.audioBytes, 20);
   assert.equal(item.counts.audioNoDataPackets, 1);
   assert.equal(item.counts.feedbacks, 2);
+  assert.equal(item.counts.feedbackTimeouts, 1);
   assert.equal(item.milestones.firstFeedback, 30);
+  assert.deepEqual(item.timeline.find((event) => event.event === 'feedback-timeout'), {
+    event: 'feedback-timeout',
+    elapsedMs: 30,
+    timeoutMs: 15000,
+    idleForMs: 15002,
+  });
   assert.equal(item.latencyMs.audioMinusVideo.mean, 5);
   assert.equal(item.clock.drift.driftMs, 0.09999999999999964);
   assert.equal(item.rtp.gapsSkipped, 1);

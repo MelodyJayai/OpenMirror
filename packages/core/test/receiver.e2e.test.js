@@ -56,6 +56,16 @@ function connect(port) {
   });
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 function mirrorFrame(type, payload, timestamp, flags = 0, option = 0) {
   const header = Buffer.alloc(128);
   header.writeUInt32LE(payload.length, 0);
@@ -215,6 +225,51 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
     assert.deepEqual(fp2.body.subarray(12), fp2Body.subarray(144));
   } finally {
     client.end();
+    await receiver.stop();
+  }
+});
+
+test('AirPlayReceiver closes a session after an established feedback heartbeat stops', async () => {
+  const receiver = new AirPlayReceiver({ name: 'FeedbackTimeout', port: 0, feedbackTimeoutMs: 40 });
+  const { port } = await receiver.start();
+  const opened = new Promise((resolve) => receiver.once('session-opened', resolve));
+  const client = await connect(port);
+  const session = await opened;
+
+  try {
+    const timedOut = new Promise((resolve) => receiver.once('feedback-timeout', resolve));
+    const closed = new Promise((resolve) => receiver.once('session-closed', resolve));
+    const mediaClosed = new Promise((resolve) => {
+      const onState = (event) => {
+        if (event.session === session && event.component === 'media' && event.state === 'closed') {
+          receiver.off('media-state', onState);
+          resolve(event);
+        }
+      };
+      receiver.on('media-state', onState);
+    });
+    const setup = await client.request(
+      'SETUP rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 1',
+      encodeBplist({ streams: [{ type: 110, streamConnectionID: 98 }] }),
+    );
+    assert.equal(setup.status, 200);
+    assert.ok(session.state.media);
+
+    const feedback = await client.request('POST /feedback RTSP/1.0\r\nCSeq: 2');
+    assert.equal(feedback.status, 200);
+
+    const event = await withTimeout(timedOut, 1000, 'feedback watchdog did not fire');
+    assert.equal(event.timeoutMs, 40);
+    assert.ok(event.idleForMs >= 1);
+    assert.equal(
+      await withTimeout(closed, 1000, 'feedback timeout did not close the RTSP session'),
+      session,
+    );
+    const closedMedia = await withTimeout(mediaClosed, 1000, 'feedback timeout did not close media');
+    assert.equal(closedMedia.reason, 'session-closed');
+    assert.equal(session.state.media, undefined);
+  } finally {
+    client.destroy();
     await receiver.stop();
   }
 });

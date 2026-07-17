@@ -85,7 +85,7 @@ npm run interop:report -- .openmirror-diagnostics/iphone.jsonl --confirm
 - AAC-ELD 有解密后的音频包，`encryptedAudioPackets` 为 0，有 `playback.audio.forwarded` 计数，并现场确认声音可闻。
 - 旋转后 `videoFormat.width/height/orientation/revision` 更新，播放自动恢复。
 - FLUSH、锁屏静默、异常 RTSP 断开和主动 TEARDOWN 均会回收播放器；重连产生同一匿名 peer 的递增 `reconnectIndex`。
-- iOS 的 `POST /feedback` 心跳计入 `counts.feedbacks`，首个心跳记录为 `milestones.firstFeedback`，用于区分仍活跃的控制会话与无心跳的异常断线。
+- iOS 的 `POST /feedback` 心跳计入 `counts.feedbacks`，首个心跳记录为 `milestones.firstFeedback`。会话收到首个心跳后会启用 15 秒看门狗；持续缺失会记录 `feedback-timeout`/`counts.feedbackTimeouts` 并关闭半开 RTSP 连接，从而触发媒体回收和后续重连。
 - `streamErrors` 不持续增长；RTP 报告包含乱序/重复/迟到/最终缺口，以及 `retransmitRequests`、`retransmittedReceived`、`retransmittedRecovered` 和实际控制报文发送统计。弱网出现丢包时应优先由 `0x55/0x56` 重传恢复，`gapsSkipped`/`retransmitUnrecovered` 不应持续增长。
 - iOS 启动 AAC-ELD 时的空 RTP 与 `00 68 34 00` 占位报文只推进序列号，并计入 `audioNoDataPackets`；它们不应计入已解密音频包、首个音频里程碑或延迟统计。
 - 延迟 p95、A/V 偏差和 drift ppm 应结合实际网络记录并用于后续调优。

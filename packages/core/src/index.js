@@ -78,6 +78,10 @@ export class AirPlayReceiver extends EventEmitter {
   constructor(options = {}) {
     super();
     const deviceId = options.deviceId ?? randomDeviceId();
+    const feedbackTimeoutMs = options.feedbackTimeoutMs ?? 15000;
+    if (!Number.isSafeInteger(feedbackTimeoutMs) || feedbackTimeoutMs < 0) {
+      throw new Error('feedbackTimeoutMs must be a non-negative integer');
+    }
     this.#options = {
       name: options.name ?? 'OpenMirror',
       port: options.port ?? 7000,
@@ -89,6 +93,7 @@ export class AirPlayReceiver extends EventEmitter {
       mediaLatencyMs: options.mediaLatencyMs ?? options.audioLatencyMs ?? 120,
       videoIdleMs: options.videoIdleMs ?? 5000,
       mediaIdleMs: options.mediaIdleMs ?? 7000,
+      feedbackTimeoutMs,
     };
     // Tests and alternate implementations can inject a compatible provider;
     // production defaults to the vendored, sandboxed PlayFair implementation.
@@ -106,6 +111,8 @@ export class AirPlayReceiver extends EventEmitter {
     this.#rtsp.on('request', (info) => this.emit('request', info));
     this.#rtsp.on('session-opened', (session) => this.emit('session-opened', session));
     this.#rtsp.on('session-closed', (session) => {
+      clearTimeout(session.state.feedbackTimeout);
+      delete session.state.feedbackTimeout;
       const closing = this.#closeMedia(session)
         .catch((error) => this.emit('error', error))
         .finally(() => {
@@ -162,6 +169,27 @@ export class AirPlayReceiver extends EventEmitter {
     return ctx.session.state.pairing;
   }
 
+  #armFeedbackTimeout(ctx) {
+    const timeoutMs = this.#options.feedbackTimeoutMs;
+    clearTimeout(ctx.session.state.feedbackTimeout);
+    if (timeoutMs === 0) return;
+
+    const timer = setTimeout(() => {
+      if (ctx.session.state.feedbackTimeout !== timer) return;
+      delete ctx.session.state.feedbackTimeout;
+      const timedOutAt = Date.now();
+      this.emit('feedback-timeout', {
+        session: ctx.session,
+        timeoutMs,
+        idleForMs: timedOutAt - ctx.session.state.lastFeedbackAt,
+        timedOutAt,
+      });
+      ctx.socket.destroy();
+    }, timeoutMs);
+    timer.unref?.();
+    ctx.session.state.feedbackTimeout = timer;
+  }
+
   #installHandlers() {
     const rtsp = this.#rtsp;
 
@@ -212,6 +240,7 @@ export class AirPlayReceiver extends EventEmitter {
     rtsp.handle('POST', '/feedback', (request, ctx) => {
       const receivedAt = Date.now();
       ctx.session.state.lastFeedbackAt = receivedAt;
+      this.#armFeedbackTimeout(ctx);
       this.emit('feedback', { session: ctx.session, receivedAt });
       return { status: 200 };
     });

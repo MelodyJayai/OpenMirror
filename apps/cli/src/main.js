@@ -357,6 +357,11 @@ receiver.on('request', ({ method, uri, bodyBytes, session }) => {
     console.log(`[rtsp] ${session.remoteAddress} ${method} ${uri} body=${bodyBytes}`);
   }
 });
+receiver.on('feedback-timeout', ({ session, idleForMs }) => {
+  console.warn(
+    `[session] ${session.remoteAddress} feedback heartbeat timed out after ${idleForMs}ms`,
+  );
+});
 receiver.on('paired', ({ session }) => {
   console.log(`[pair] ${session.remoteAddress} completed pair-verify`);
 });
