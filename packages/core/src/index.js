@@ -26,6 +26,10 @@ import {
 } from './stream/rtp.js';
 import { AirPlayMediaClock } from './stream/timing.js';
 import { MediaActivityMonitor } from './stream/activity.js';
+import {
+  parseRaopAnnounce, parseTransportHeader, buildTransportHeader,
+  parseTextParameters, parseRtpInfoHeader,
+} from './rtsp/sdp.js';
 
 export { MdnsResponder, localIPv4Addresses, isUsableLanIPv4 } from './discovery/responder.js';
 export * as dns from './discovery/dns.js';
@@ -64,6 +68,10 @@ export {
   addRtpTicksToNtp, AirPlayMediaClock, TIMING_REQUEST, TIMING_REPLY,
 } from './stream/timing.js';
 export { MediaActivityMonitor } from './stream/activity.js';
+export {
+  parseRaopAnnounce, parseTransportHeader, buildTransportHeader,
+  parseTextParameters, parseRtpInfoHeader, RAOP_COMPRESSION,
+} from './rtsp/sdp.js';
 export { AirPlayDiagnostics, analyzeInteroperabilityRecords } from './diagnostics.js';
 
 export class AirPlayReceiver extends EventEmitter {
@@ -248,16 +256,55 @@ export class AirPlayReceiver extends EventEmitter {
     rtsp.handle('OPTIONS', (request) => ({
       status: 200,
       headers: {
-        Public: 'SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER',
+        Public: 'ANNOUNCE, SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER',
       },
     }));
+
+    rtsp.handle('ANNOUNCE', (request, ctx) => {
+      const state = ctx.session.state;
+      let announce;
+      try {
+        announce = parseRaopAnnounce(request.body);
+      } catch (error) {
+        this.emit('stream-error', { error, type: 'raop-announce', session: ctx.session });
+        return { status: 400 };
+      }
+      state.announce = announce;
+      if (announce.encryption === 'rsa') {
+        // We advertise et='0,3,5' (none / FairPlay) only; the RSA path would
+        // require Apple's leaked private key, which this project must not ship.
+        const error = new Error('RSA-encrypted RAOP streams are not supported (et=1)');
+        this.emit('stream-error', { error, type: 'raop-announce', session: ctx.session });
+        return { status: 453 };
+      }
+      if (announce.ekey) state.ekey = announce.ekey;
+      if (announce.eiv) state.eiv = announce.eiv;
+      this.#resolveSessionKey(state, ctx.session);
+      this.emit('announce', {
+        codec: announce.codec,
+        compressionType: announce.compressionType,
+        sampleRate: announce.sampleRate,
+        channels: announce.channels,
+        samplesPerFrame: announce.samplesPerFrame,
+        encryption: announce.encryption,
+        hasKey: Boolean(announce.ekey),
+        hasIv: Boolean(announce.eiv),
+        minLatency: announce.minLatency,
+        maxLatency: announce.maxLatency,
+        session: ctx.session,
+      });
+      return { status: 200 };
+    });
 
     rtsp.handle('SETUP', async (request, ctx) => {
       let payload = null;
       try {
         payload = decodeBplist(request.body);
       } catch {
-        // Legacy SDP-style SETUP; handled in the media milestone.
+        // Legacy RAOP SETUP carries a Transport header instead of a bplist.
+        if (typeof request.headers.transport === 'string') {
+          return this.#legacySetup(request, ctx);
+        }
       }
       const state = ctx.session.state;
       if (Buffer.isBuffer(payload?.ekey)) state.ekey = Buffer.from(payload.ekey);
@@ -304,7 +351,8 @@ export class AirPlayReceiver extends EventEmitter {
 
     rtsp.handle('RECORD', (request, ctx) => {
       ctx.session.state.recording = true;
-      this.emit('record', { session: ctx.session });
+      const rtpInfo = parseRtpInfoHeader(request.headers['rtp-info']);
+      this.emit('record', { rtpInfo, session: ctx.session });
       return {
         status: 200,
         headers: {
@@ -313,14 +361,41 @@ export class AirPlayReceiver extends EventEmitter {
         },
       };
     });
-    rtsp.handle('SET_PARAMETER', () => ({ status: 200 }));
-    rtsp.handle('GET_PARAMETER', (request) => {
+    rtsp.handle('SET_PARAMETER', (request, ctx) => {
+      const session = ctx.session;
+      const contentType = (request.headers['content-type'] ?? '').toLowerCase();
+      if (contentType.includes('text/parameters')) {
+        const parameters = parseTextParameters(request.body);
+        if (parameters.volume !== undefined && Number.isFinite(Number(parameters.volume))) {
+          const volumeDb = Number(parameters.volume);
+          session.state.volume = volumeDb;
+          // iOS senders signal mute as -144 dB; the audible range is -30..0.
+          this.emit('volume', { volumeDb, muted: volumeDb <= -144, session });
+        }
+        if (parameters.progress !== undefined) {
+          this.emit('progress', { progress: parameters.progress, session });
+        }
+        this.emit('set-parameter', { parameters, session });
+      } else if (contentType.includes('dmap')) {
+        this.emit('metadata', { bytes: request.body.length, body: request.body, session });
+      } else if (contentType.startsWith('image/')) {
+        this.emit('artwork', {
+          contentType: request.headers['content-type'],
+          bytes: request.body.length,
+          body: request.body,
+          session,
+        });
+      }
+      return { status: 200 };
+    });
+    rtsp.handle('GET_PARAMETER', (request, ctx) => {
       const text = request.body.toString('latin1').trim();
       if (text === 'volume') {
+        const volumeDb = ctx.session.state.volume ?? 0;
         return {
           status: 200,
           headers: { 'Content-Type': 'text/parameters' },
-          body: Buffer.from('volume: 0.0\r\n', 'latin1'),
+          body: Buffer.from(`volume: ${volumeDb.toFixed(6)}\r\n`, 'latin1'),
         };
       }
       return { status: 200 };
@@ -352,6 +427,70 @@ export class AirPlayReceiver extends EventEmitter {
         close: true,
       };
     });
+  }
+
+  async #legacySetup(request, ctx) {
+    const state = ctx.session.state;
+    let transport;
+    try {
+      transport = parseTransportHeader(request.headers.transport);
+    } catch (error) {
+      this.emit('stream-error', { error, type: 'raop-setup', session: ctx.session });
+      return { status: 400 };
+    }
+    const announce = state.announce ?? null;
+    const media = await this.#media(ctx, { sampleRate: announce?.sampleRate ?? 44100 });
+    const senderAddress = ctx.session.remoteAddress.replace(/^::ffff:/, '');
+    if (transport.controlPort) {
+      media.transport.configureAudio({
+        address: senderAddress,
+        controlPort: transport.controlPort,
+      });
+    }
+    if (transport.timingPort) {
+      media.transport.configureTiming({
+        address: senderAddress,
+        port: transport.timingPort,
+      });
+    }
+    this.#resolveSessionKey(state, ctx.session);
+    state.audio = {
+      format: announce?.codec ?? null,
+      compressionType: announce?.compressionType ?? null,
+      samplesPerFrame: announce?.samplesPerFrame ?? null,
+      sampleRate: announce?.sampleRate ?? 44100,
+      cleartext: (announce?.encryption ?? 'none') === 'none',
+      decryptor: state.sessionKey && state.eiv?.length >= 16
+        ? new AudioPacketDecryptor(state.sessionKey, state.eiv.subarray(0, 16))
+        : null,
+    };
+    this.emit('setup', {
+      payload: null,
+      transport: {
+        protocol: transport.protocol,
+        controlPort: transport.controlPort,
+        timingPort: transport.timingPort,
+      },
+      ports: media.ports,
+      crypto: {
+        sessionKeyReady: Boolean(state.sessionKey),
+        audioDecryptorReady: Boolean(state.audio.decryptor),
+        videoDecryptorReady: false,
+      },
+      session: ctx.session,
+    });
+    return {
+      status: 200,
+      headers: {
+        Transport: buildTransportHeader({
+          serverPort: media.ports.audioPort,
+          controlPort: media.ports.audioControlPort,
+          timingPort: media.ports.timingPort,
+        }),
+        Session: '1',
+        'Audio-Jack-Status': 'connected; type=analog',
+      },
+    };
   }
 
   #resolveSessionKey(state, session) {
@@ -447,7 +586,7 @@ export class AirPlayReceiver extends EventEmitter {
         this.emit('audio-data', {
           ...packet,
           payload,
-          encrypted: !decryptor,
+          encrypted: !decryptor && !audio?.cleartext,
           compressionType: audio?.compressionType,
           samplesPerFrame: audio?.samplesPerFrame,
           sampleRate: audio?.sampleRate ?? 44100,

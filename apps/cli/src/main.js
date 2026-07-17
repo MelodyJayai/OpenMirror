@@ -214,6 +214,7 @@ const audioSinks = new Map();
 const latestCodecs = new Map();
 const intentionallyStoppedVideoSinks = new WeakSet();
 const intentionallyStoppedAudioSinks = new WeakSet();
+const unsupportedAudioLogged = new WeakSet();
 const localAddressSet = new Set(localIPv4Addresses().map((address) => address.address));
 const receiverName = receiver.options.name;
 let externalDiscoverySeen = false;
@@ -368,6 +369,26 @@ receiver.on('paired', ({ session }) => {
 receiver.on('fp-setup', ({ session, phase }) => {
   console.log(`[fairplay] ${session.remoteAddress} fp-setup phase ${phase}`);
 });
+receiver.on('announce', ({
+  session, codec, compressionType, sampleRate, channels, samplesPerFrame, encryption,
+}) => {
+  console.log(
+    `[announce] ${session.remoteAddress} RAOP ${codec ?? 'unknown'} ct=${compressionType ?? '-'}`
+    + ` sr=${sampleRate} ch=${channels} spf=${samplesPerFrame ?? '-'} encryption=${encryption}`,
+  );
+});
+receiver.on('volume', ({ session, volumeDb, muted }) => {
+  console.log(`[volume] ${session.remoteAddress} ${muted ? 'muted' : `${volumeDb} dB`}`);
+});
+receiver.on('progress', ({ session, progress }) => {
+  if (values.verbose) console.log(`[progress] ${session.remoteAddress} ${progress}`);
+});
+receiver.on('metadata', ({ session, bytes }) => {
+  if (values.verbose) console.log(`[metadata] ${session.remoteAddress} DMAP ${bytes} bytes`);
+});
+receiver.on('artwork', ({ session, contentType, bytes }) => {
+  if (values.verbose) console.log(`[artwork] ${session.remoteAddress} ${contentType} ${bytes} bytes`);
+});
 receiver.on('setup', ({ session, ports, payload, crypto }) => {
   console.log(
     `[setup] ${session.remoteAddress} media ports:`
@@ -455,6 +476,18 @@ receiver.on('audio-data', (packet) => {
       `[audio] ${session.remoteAddress} seq=${sequence} bytes=${payload.length}`
       + `${encrypted ? ' (encrypted)' : ''}${delay}`,
     );
+  }
+  // The ffplay audio sink only decodes AAC-ELD (ct=8); RAOP ALAC/PCM playback
+  // is a later milestone, so those packets are received and counted only.
+  if (packet.compressionType !== 8) {
+    if (!unsupportedAudioLogged.has(session)) {
+      unsupportedAudioLogged.add(session);
+      console.log(
+        `[audio] ${session.remoteAddress} ct=${packet.compressionType ?? 'unknown'}`
+        + ' playback not supported yet; receiving without a local player',
+      );
+    }
+    return;
   }
   audioSinkFor(session, packet)?.writeAudio(packet);
 });

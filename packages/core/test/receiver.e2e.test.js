@@ -151,7 +151,7 @@ test('AirPlayReceiver serves /info and completes legacy pairing end-to-end', asy
 
     const options = await client.request('OPTIONS * RTSP/1.0\r\nCSeq: 3');
     assert.equal(options.headers.public, (
-      'SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER'
+      'ANNOUNCE, SETUP, RECORD, FLUSH, TEARDOWN, OPTIONS, GET_PARAMETER, SET_PARAMETER'
     ));
 
     // pair-setup
