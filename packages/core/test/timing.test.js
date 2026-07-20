@@ -156,6 +156,18 @@ test('MirrorTransport reports active video connections during fast reconnects', 
   const disconnected = [];
   transport.on('video-connection', (event) => connected.push(event));
   transport.on('video-disconnection', (event) => disconnected.push(event));
+  // The client-side connect event can fire before the server has accepted the
+  // socket, so synchronize on the transport's own events instead of timers.
+  const nthEvent = (event, n) => new Promise((resolve) => {
+    const listener = () => {
+      if ((event === 'video-connection' ? connected : disconnected).length >= n) {
+        transport.off(event, listener);
+        resolve();
+      }
+    };
+    transport.on(event, listener);
+  });
+  const bothConnected = nthEvent('video-connection', 2);
   const first = net.connect(ports.videoPort, '127.0.0.1');
   const second = net.connect(ports.videoPort, '127.0.0.1');
   try {
@@ -163,17 +175,17 @@ test('MirrorTransport reports active video connections during fast reconnects', 
       new Promise((resolve, reject) => first.once('connect', resolve).once('error', reject)),
       new Promise((resolve, reject) => second.once('connect', resolve).once('error', reject)),
     ]);
-    await new Promise((resolve) => setImmediate(resolve));
+    await bothConnected;
     assert.deepEqual(connected.map((event) => event.activeConnections), [1, 2]);
 
+    const firstDisconnected = nthEvent('video-disconnection', 1);
     first.destroy();
-    await new Promise((resolve) => first.once('close', resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    await firstDisconnected;
     assert.equal(disconnected[0].activeConnections, 1);
 
+    const secondDisconnected = nthEvent('video-disconnection', 2);
     second.destroy();
-    await new Promise((resolve) => second.once('close', resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    await secondDisconnected;
     assert.equal(disconnected[1].activeConnections, 0);
   } finally {
     first.destroy();
