@@ -19,4 +19,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm install
+        env:
+          # CI only runs node --test; skip the ~100 MB Electron binary download.
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
       - run: npm test

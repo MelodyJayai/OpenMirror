@@ -1,0 +1,20 @@
+{
+  "name": "@openmirror/desktop",
+  "version": "0.1.0",
+  "description": "OpenMirror desktop receiver (Electron shell with WebCodecs rendering)",
+  "license": "GPL-3.0",
+  "type": "module",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@openmirror/core": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "^43.1.1"
+  }
+}

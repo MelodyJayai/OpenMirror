@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>OpenMirror</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #101418;
+      color: #e8e8e8;
+      font-family: system-ui, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    #stage {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+    }
+    #video {
+      max-width: 100%;
+      max-height: 100%;
+    }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      background: #101418;
+      text-align: center;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 { font-size: 22px; font-weight: 600; margin: 0; }
+    #overlay p { margin: 0; color: #9aa4ad; font-size: 14px; }
+    #status {
+      position: absolute;
+      left: 12px;
+      bottom: 10px;
+      font-size: 12px;
+      color: #9aa4ad;
+      text-shadow: 0 1px 2px #000;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="video" width="1280" height="720"></canvas></div>
+  <div id="overlay">
+    <h1 id="overlay-title">OpenMirror</h1>
+    <p id="overlay-address">正在启动接收器…</p>
+    <p>在 iPhone/iPad 上打开控制中心 → 屏幕镜像，选择本设备。</p>
+  </div>
+  <div id="status"></div>
+  <script src="renderer.js"></script>
+</body>
+</html>

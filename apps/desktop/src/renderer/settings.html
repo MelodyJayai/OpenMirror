@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>OpenMirror 设置</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px 24px;
+      background: #101418;
+      color: #e8e8e8;
+      font-family: system-ui, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+    h1 { font-size: 16px; margin: 0 0 16px; }
+    label { display: block; margin: 12px 0 4px; color: #9aa4ad; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px 9px;
+      border-radius: 6px;
+      border: 1px solid #2a3138;
+      background: #181e24;
+      color: #e8e8e8;
+      font-size: 14px;
+    }
+    .hint { margin-top: 6px; color: #9aa4ad; font-size: 12px; }
+    .actions { margin-top: 20px; display: flex; gap: 10px; }
+    button {
+      padding: 8px 18px;
+      border-radius: 6px;
+      border: none;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    #save { background: #2aa0d4; color: #04141c; font-weight: 600; }
+    #close { background: #2a3138; color: #e8e8e8; }
+    #result { margin-top: 12px; min-height: 18px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>接收器设置</h1>
+  <label for="name">设备名称（发送端列表中显示）</label>
+  <input id="name" maxlength="63">
+  <label for="port">RTSP 控制端口（0 = 随机）</label>
+  <input id="port" type="number" min="0" max="65535">
+  <p class="hint">保存后接收器会重启，正在进行的投屏会断开。</p>
+  <div class="actions">
+    <button id="save">保存并重启</button>
+    <button id="close">关闭</button>
+  </div>
+  <div id="result"></div>
+  <script src="settings.js"></script>
+</body>
+</html>

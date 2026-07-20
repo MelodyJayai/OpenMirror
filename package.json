@@ -13,7 +13,8 @@
     "build:playfair": "node tools/build-playfair-wasm.js",
     "test": "node --test",
     "interop:report": "node tools/analyze-interoperability.js",
-    "start": "node apps/cli/src/main.js"
+    "start": "node apps/cli/src/main.js",
+    "start:desktop": "npm run start --workspace @openmirror/desktop"
   },
   "engines": {
     "node": ">=20"
