@@ -33,7 +33,8 @@ export function unsignedConnectionId(id) {
 
 /**
  * Legacy-paired senders bind the PlayFair-unwrapped key to pair-verify's
- * X25519 secret with SHA-256. Unpaired/old-protocol senders use it directly.
+ * X25519 secret: eaeskey = SHA512(key16 ‖ ecdhSecret32)[0..16), matching the
+ * established UxPlay/RPiPlay receivers. Unpaired senders use it directly.
  */
 export function deriveFairPlaySessionKey(unwrappedKey, pairingSecret = null) {
   if (!Buffer.isBuffer(unwrappedKey) || unwrappedKey.length < 16) {
@@ -44,7 +45,7 @@ export function deriveFairPlaySessionKey(unwrappedKey, pairingSecret = null) {
   if (!Buffer.isBuffer(pairingSecret) || pairingSecret.length !== 32) {
     throw new Error('pairingSecret must be 32 bytes');
   }
-  return crypto.createHash('sha256').update(key).update(pairingSecret).digest().subarray(0, 16);
+  return crypto.createHash('sha512').update(key).update(pairingSecret).digest().subarray(0, 16);
 }
 
 /** Derive the AES-CTR key/iv for a mirroring video stream. */

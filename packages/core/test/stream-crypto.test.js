@@ -28,7 +28,7 @@ test('deriveMirrorStreamKey matches the documented SHA512 derivation', () => {
 test('deriveFairPlaySessionKey binds paired sessions to the X25519 secret', () => {
   const unwrapped = Buffer.from('00112233445566778899aabbccddeeff', 'hex');
   const shared = Buffer.alloc(32, 0x5a);
-  const expected = crypto.createHash('sha256').update(unwrapped).update(shared).digest().subarray(0, 16);
+  const expected = crypto.createHash('sha512').update(unwrapped).update(shared).digest().subarray(0, 16);
   assert.deepEqual(deriveFairPlaySessionKey(unwrapped, shared), expected);
   assert.deepEqual(deriveFairPlaySessionKey(unwrapped), unwrapped);
   assert.throws(() => deriveFairPlaySessionKey(unwrapped, Buffer.alloc(31)), /32 bytes/);

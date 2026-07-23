@@ -667,7 +667,14 @@ export class AirPlayReceiver extends EventEmitter {
         };
         this.emit('video-frame', { ...processedFrame, session });
         try {
-          h264.push(processedFrame);
+          if (!processedFrame.encrypted) {
+            h264.push(processedFrame);
+          } else if (!session.state.encryptedVideoWarned) {
+            // Without a media session key every frame would fail AVCC parsing;
+            // surface one actionable error instead of per-frame garbage.
+            session.state.encryptedVideoWarned = true;
+            throw new Error('mirror video is encrypted but no media session key was established (fp-setup/pair-verify incomplete)');
+          }
         } finally {
           if (
             frame.type === MIRROR_PAYLOAD.CODEC
