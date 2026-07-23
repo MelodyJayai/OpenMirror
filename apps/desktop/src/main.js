@@ -103,7 +103,9 @@ async function startReceiver() {
   });
   instance.on('video-codec', ({ sps, annexB, dimensions }) => {
     logEvent('video-codec', { dimensions });
-    send('om:codec', { sps, annexB });
+    // parseAvcC yields sps as Buffer[]; the renderer derives the codec string
+    // from the first (and in practice only) SPS.
+    send('om:codec', { sps: sps?.[0], annexB });
   });
   instance.on('video-data', ({ annexB, keyframe, timing }) => {
     counters.videoData++;

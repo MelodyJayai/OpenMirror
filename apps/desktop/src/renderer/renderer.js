@@ -55,23 +55,30 @@ function paint(frame) {
 }
 
 function configureDecoder({ sps, annexB }) {
-  parameterSets = new Uint8Array(annexB);
-  codecString = codecFromSps(new Uint8Array(sps));
-  closeDecoder();
-  if (typeof VideoDecoder !== 'function') {
-    setStatus('此环境不支持 WebCodecs VideoDecoder');
-    return;
+  try {
+    parameterSets = new Uint8Array(annexB);
+    const spsBytes = new Uint8Array(sps);
+    if (spsBytes.length < 4) throw new Error(`SPS 过短（${spsBytes.length} 字节）`);
+    codecString = codecFromSps(spsBytes);
+    closeDecoder();
+    if (typeof VideoDecoder !== 'function') {
+      setStatus('此环境不支持 WebCodecs VideoDecoder');
+      return;
+    }
+    decoder = new VideoDecoder({
+      output: paint,
+      error: (error) => {
+        setStatus(`解码错误：${error.message}`);
+        closeDecoder();
+      },
+    });
+    decoder.configure({ codec: codecString, optimizeForLatency: true });
+    awaitingKeyframe = true;
+    setStatus(`H.264 ${codecString}`);
+  } catch (error) {
+    setStatus(`视频配置错误：${error.message}`);
+    closeDecoder();
   }
-  decoder = new VideoDecoder({
-    output: paint,
-    error: (error) => {
-      setStatus(`解码错误：${error.message}`);
-      closeDecoder();
-    },
-  });
-  decoder.configure({ codec: codecString, optimizeForLatency: true });
-  awaitingKeyframe = true;
-  setStatus(`H.264 ${codecString}`);
 }
 
 window.openmirror.onCodec(configureDecoder);
