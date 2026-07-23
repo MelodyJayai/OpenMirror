@@ -57,6 +57,7 @@
         "AppImage",
         "deb"
       ],
+      "executableName": "openmirror",
       "category": "AudioVideo",
       "maintainer": "OpenMirror contributors"
     }
