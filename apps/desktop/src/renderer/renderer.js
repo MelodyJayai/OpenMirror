@@ -108,6 +108,12 @@ const audioGraph = new AudioGraph();
 let aacDecoder = null;
 let aacUnsupported = false;
 let aacFallbackTimestampUs = 0;
+// Chromium's WebCodecs whitelist rejects the honest 'mp4a.40.39' (AAC-ELD)
+// codec string, but its FFmpeg-backed AAC decoder follows the
+// AudioSpecificConfig in `description`, which declares ELD. Try the honest
+// string first, then whitelisted AAC strings with the same ELD description.
+const AAC_CODEC_CANDIDATES = ['mp4a.40.39', 'mp4a.40.2', 'mp4a.40.5'];
+const failedAacCodecs = new Set();
 
 function closeAacDecoder() {
   if (aacDecoder && aacDecoder.state !== 'closed') aacDecoder.close();
@@ -122,40 +128,45 @@ async function ensureAacDecoder({ config, sampleRate, channels }) {
     setStatus('此环境不支持 WebCodecs AudioDecoder，AAC-ELD 音频已禁用');
     return null;
   }
-  const decoderConfig = {
-    codec: 'mp4a.40.39',
-    sampleRate,
-    numberOfChannels: channels,
-    description: hexToBytes(config),
-  };
-  const support = await AudioDecoder.isConfigSupported(decoderConfig).catch(() => null);
-  if (!support?.supported) {
-    aacUnsupported = true;
-    setStatus('此环境不支持 AAC-ELD 音频解码');
-    return null;
+  const description = hexToBytes(config);
+  for (const codec of AAC_CODEC_CANDIDATES) {
+    if (failedAacCodecs.has(codec)) continue;
+    const decoderConfig = { codec, sampleRate, numberOfChannels: channels, description };
+    const support = await AudioDecoder.isConfigSupported(decoderConfig).catch(() => null);
+    if (!support?.supported) {
+      failedAacCodecs.add(codec);
+      continue;
+    }
+    aacDecoder = new AudioDecoder({
+      output: (audioData) => {
+        const planes = [];
+        for (let channel = 0; channel < audioData.numberOfChannels; channel++) {
+          const plane = new Float32Array(audioData.numberOfFrames);
+          audioData.copyTo(plane, { planeIndex: channel, format: 'f32-planar' });
+          planes.push(plane);
+        }
+        audioGraph.playPlanar({
+          planes,
+          sampleRate: audioData.sampleRate,
+          presentationTimeMs: audioData.timestamp / 1000,
+        });
+        audioData.close();
+      },
+      error: (error) => {
+        // This codec string cannot decode the ELD bitstream; blacklist it and
+        // let the next packet retry with the following candidate.
+        console.warn(`AAC codec ${codec} failed: ${error.message}`);
+        failedAacCodecs.add(codec);
+        closeAacDecoder();
+      },
+    });
+    aacDecoder.configure(decoderConfig);
+    console.warn(`AAC-ELD decoder configured as ${codec}`);
+    return aacDecoder;
   }
-  aacDecoder = new AudioDecoder({
-    output: (audioData) => {
-      const planes = [];
-      for (let channel = 0; channel < audioData.numberOfChannels; channel++) {
-        const plane = new Float32Array(audioData.numberOfFrames);
-        audioData.copyTo(plane, { planeIndex: channel, format: 'f32-planar' });
-        planes.push(plane);
-      }
-      audioGraph.playPlanar({
-        planes,
-        sampleRate: audioData.sampleRate,
-        presentationTimeMs: audioData.timestamp / 1000,
-      });
-      audioData.close();
-    },
-    error: (error) => {
-      setStatus(`音频解码错误：${error.message}`);
-      closeAacDecoder();
-    },
-  });
-  aacDecoder.configure(decoderConfig);
-  return aacDecoder;
+  aacUnsupported = true;
+  setStatus('此环境不支持 AAC-ELD 音频解码');
+  return null;
 }
 
 window.openmirror.onAudio((packet) => {
