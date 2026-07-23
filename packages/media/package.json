@@ -8,7 +8,9 @@
   "exports": {
     ".": "./src/index.js",
     "./ffplay": "./src/ffplay.js",
-    "./ffplay-audio": "./src/ffplay-audio.js"
+    "./ffplay-audio": "./src/ffplay-audio.js",
+    "./ffplay-pcm": "./src/ffplay-pcm.js",
+    "./alac": "./src/alac.js"
   },
   "engines": {
     "node": ">=20"

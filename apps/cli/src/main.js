@@ -18,7 +18,9 @@ import {
   isUsableLanIPv4,
   localIPv4Addresses,
 } from '@openmirror/core';
-import { FfplayAudioSink, FfplayVideoSink, probeFfplay } from '@openmirror/media';
+import {
+  FfplayAudioSink, FfplayPcmSink, FfplayVideoSink, alacDecoderFromAnnounce, probeFfplay,
+} from '@openmirror/media';
 
 const { values } = parseArgs({
   options: {
@@ -50,7 +52,7 @@ Usage: openmirror [options]
       --headless             Receive media without opening ffplay
       --ffplay <path>        ffplay executable name/path (default: ffplay)
       --fullscreen           Open the video player fullscreen
-      --mute                 Disable AAC-ELD audio output
+      --mute                 Disable audio output (AAC-ELD/ALAC/PCM)
       --advertise-address    Force the LAN IPv4 address published over mDNS
       --identity <path>      Persistent receiver identity file
       --diagnostics <path>   Append redacted interoperability records as JSONL
@@ -211,9 +213,13 @@ if (!values.headless && !displayEnabled) {
 
 const videoSinks = new Map();
 const audioSinks = new Map();
+const pcmSinks = new Map();
 const latestCodecs = new Map();
+const raopAnnounces = new Map();
+const alacDecoders = new Map();
 const intentionallyStoppedVideoSinks = new WeakSet();
 const intentionallyStoppedAudioSinks = new WeakSet();
+const intentionallyStoppedPcmSinks = new WeakSet();
 const unsupportedAudioLogged = new WeakSet();
 const localAddressSet = new Set(localIPv4Addresses().map((address) => address.address));
 const receiverName = receiver.options.name;
@@ -305,6 +311,75 @@ function audioSinkFor(session, packet) {
   return sink;
 }
 
+function alacDecoderFor(session) {
+  let decoder = alacDecoders.get(session);
+  if (decoder) return decoder;
+  const announce = raopAnnounces.get(session);
+  try {
+    decoder = alacDecoderFromAnnounce(announce);
+  } catch (error) {
+    if (!unsupportedAudioLogged.has(session)) {
+      unsupportedAudioLogged.add(session);
+      console.warn(`[audio] ${session.remoteAddress} cannot decode ALAC: ${error.message}`);
+    }
+    return null;
+  }
+  alacDecoders.set(session, decoder);
+  return decoder;
+}
+
+const littleEndianHost = new Uint8Array(Uint16Array.of(1).buffer)[0] === 1;
+
+function int16ToLittleEndian(samples) {
+  if (littleEndianHost) {
+    return Buffer.from(samples.buffer, samples.byteOffset, samples.length * 2);
+  }
+  const pcm = Buffer.allocUnsafe(samples.length * 2);
+  for (let i = 0; i < samples.length; i++) pcm.writeInt16LE(samples[i], i * 2);
+  return pcm;
+}
+
+function pcmSinkFor(session, packet) {
+  if (!displayEnabled || values.mute) return null;
+  let sink = pcmSinks.get(session);
+  if (sink) return sink;
+  const announce = raopAnnounces.get(session);
+  sink = new FfplayPcmSink({
+    executable: values.ffplay,
+    sampleRate: packet.sampleRate ?? announce?.sampleRate ?? 44100,
+    channels: announce?.channels ?? 2,
+  });
+  sink.on('started', ({ pid }) => {
+    console.log(`[audio] opened ffplay PCM player (pid ${pid}) for ${session.remoteAddress}`);
+    playbackEvent(session, 'audio', 'started');
+  });
+  sink.on('process-error', (error) => {
+    console.error(`[audio] ${error.message}`);
+    if (!intentionallyStoppedPcmSinks.has(sink)) {
+      playbackEvent(session, 'audio', 'errors', { reason: 'process-error' });
+    }
+  });
+  sink.on('exit', ({ code, signal }) => {
+    if (intentionallyStoppedPcmSinks.has(sink)) return;
+    console.error(
+      `[audio] ffplay exited unexpectedly (code=${code ?? '-'}, signal=${signal ?? '-'})`,
+    );
+    playbackEvent(session, 'audio', 'errors', { reason: 'unexpected-exit' });
+  });
+  sink.on('diagnostic', (message) => {
+    if (values.verbose) console.error(`[ffplay:audio] ${message}`);
+  });
+  sink.on('dropped', ({ packets, bytes, reason }) => {
+    if (values.verbose) {
+      console.warn(`[audio] dropped ${packets} packet(s), ${bytes} bytes (${reason})`);
+    }
+    playbackEvent(session, 'audio', 'drops', { reason, count: packets });
+  });
+  sink.on('packet', () => playbackEvent(session, 'audio', 'forwarded'));
+  pcmSinks.set(session, sink);
+  return sink;
+}
+
 async function stopVideoSink(session, reason) {
   const sink = videoSinks.get(session);
   videoSinks.delete(session);
@@ -329,10 +404,27 @@ async function stopAudioSink(session, reason) {
   });
 }
 
+async function stopPcmSink(session, reason) {
+  const sink = pcmSinks.get(session);
+  pcmSinks.delete(session);
+  if (!sink) return;
+  intentionallyStoppedPcmSinks.add(sink);
+  if (values.verbose) console.log(`[audio] recycling PCM sink (${reason})`);
+  await sink.stop().catch((error) => {
+    console.error(`[audio] ${error.message}`);
+    playbackEvent(session, 'audio', 'errors', { reason: 'stop-error' });
+  });
+}
+
 function stopSessionSinks(session, reason, { forgetCodec = false } = {}) {
   void stopVideoSink(session, reason);
   void stopAudioSink(session, reason);
-  if (forgetCodec) latestCodecs.delete(session);
+  void stopPcmSink(session, reason);
+  if (forgetCodec) {
+    latestCodecs.delete(session);
+    raopAnnounces.delete(session);
+    alacDecoders.delete(session);
+  }
 }
 
 receiver.on('session-opened', (session) => {
@@ -370,12 +462,16 @@ receiver.on('fp-setup', ({ session, phase }) => {
   console.log(`[fairplay] ${session.remoteAddress} fp-setup phase ${phase}`);
 });
 receiver.on('announce', ({
-  session, codec, compressionType, sampleRate, channels, samplesPerFrame, encryption,
+  session, codec, compressionType, sampleRate, channels, samplesPerFrame, encryption, alac,
 }) => {
   console.log(
     `[announce] ${session.remoteAddress} RAOP ${codec ?? 'unknown'} ct=${compressionType ?? '-'}`
     + ` sr=${sampleRate} ch=${channels} spf=${samplesPerFrame ?? '-'} encryption=${encryption}`,
   );
+  raopAnnounces.set(session, { compressionType, sampleRate, channels, alac });
+  alacDecoders.delete(session);
+  unsupportedAudioLogged.delete(session);
+  void stopPcmSink(session, 'announce');
 });
 receiver.on('volume', ({ session, volumeDb, muted }) => {
   console.log(`[volume] ${session.remoteAddress} ${muted ? 'muted' : `${volumeDb} dB`}`);
@@ -477,19 +573,52 @@ receiver.on('audio-data', (packet) => {
       + `${encrypted ? ' (encrypted)' : ''}${delay}`,
     );
   }
-  // The ffplay audio sink only decodes AAC-ELD (ct=8); RAOP ALAC/PCM playback
-  // is a later milestone, so those packets are received and counted only.
-  if (packet.compressionType !== 8) {
-    if (!unsupportedAudioLogged.has(session)) {
-      unsupportedAudioLogged.add(session);
-      console.log(
-        `[audio] ${session.remoteAddress} ct=${packet.compressionType ?? 'unknown'}`
-        + ' playback not supported yet; receiving without a local player',
-      );
-    }
+  if (packet.compressionType === 8) {
+    audioSinkFor(session, packet)?.writeAudio(packet);
     return;
   }
-  audioSinkFor(session, packet)?.writeAudio(packet);
+  // RAOP audio: ct=2 is ALAC decoded in-process, ct=1 is L16 big-endian PCM.
+  if (packet.compressionType === 1 || packet.compressionType === 2) {
+    if (encrypted) {
+      playbackEvent(session, 'audio', 'drops', { reason: 'encrypted', count: 1 });
+      return;
+    }
+    let pcm;
+    if (packet.compressionType === 2) {
+      const decoder = alacDecoderFor(session);
+      if (!decoder) return;
+      try {
+        const { samples } = decoder.decode(payload);
+        pcm = int16ToLittleEndian(samples);
+      } catch (error) {
+        if (values.verbose) {
+          console.warn(`[audio] ${session.remoteAddress} ALAC decode failed: ${error.message}`);
+        }
+        playbackEvent(session, 'audio', 'errors', { reason: 'alac-decode' });
+        return;
+      }
+    } else {
+      if (payload.length % 2) {
+        playbackEvent(session, 'audio', 'drops', { reason: 'unaligned', count: 1 });
+        return;
+      }
+      pcm = Buffer.from(payload).swap16();
+    }
+    pcmSinkFor(session, packet)?.writePcm({
+      pcm,
+      sequence,
+      timestamp: packet.timestamp,
+      timing,
+    });
+    return;
+  }
+  if (!unsupportedAudioLogged.has(session)) {
+    unsupportedAudioLogged.add(session);
+    console.log(
+      `[audio] ${session.remoteAddress} ct=${packet.compressionType ?? 'unknown'}`
+      + ' playback not supported; receiving without a local player',
+    );
+  }
 });
 receiver.on('audio-sync', ({ session, rtpTimestamp, nextRtpTimestamp, timing }) => {
   if (values.verbose) {
@@ -630,10 +759,14 @@ async function stop() {
   await Promise.all([
     ...[...videoSinks.keys()].map((session) => stopVideoSink(session, 'shutdown')),
     ...[...audioSinks.keys()].map((session) => stopAudioSink(session, 'shutdown')),
+    ...[...pcmSinks.keys()].map((session) => stopPcmSink(session, 'shutdown')),
   ]);
   videoSinks.clear();
   audioSinks.clear();
+  pcmSinks.clear();
   latestCodecs.clear();
+  raopAnnounces.clear();
+  alacDecoders.clear();
   await receiver.stop();
   const finalSnapshot = diagnostics.snapshot();
   writeDiagnostic('final-snapshot', finalSnapshot);

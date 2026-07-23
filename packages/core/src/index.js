@@ -291,6 +291,7 @@ export class AirPlayReceiver extends EventEmitter {
         hasIv: Boolean(announce.eiv),
         minLatency: announce.minLatency,
         maxLatency: announce.maxLatency,
+        alac: announce.alac ? { ...announce.alac } : null,
         session: ctx.session,
       });
       return { status: 200 };
