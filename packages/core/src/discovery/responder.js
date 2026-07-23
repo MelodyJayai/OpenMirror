@@ -23,6 +23,8 @@ export function isUsableLanIPv4(address) {
   }
   const [a, b] = octets;
   if (a === 0 || a === 127 || a >= 224) return false;
+  // Link-local (APIPA) addresses mean the interface has no real network.
+  if (a === 169 && b === 254) return false;
   // RFC 2544 benchmarking space is commonly assigned to VPN/agent adapters.
   if (a === 198 && (b === 18 || b === 19)) return false;
   return true;
@@ -99,7 +101,6 @@ export class MdnsResponder extends EventEmitter {
         }
         this.#socket.setMulticastTTL(255);
         this.#socket.setMulticastLoopback(true);
-        if (addresses.length) this.#socket.setMulticastInterface(addresses[0]);
         resolve();
       });
     });
@@ -119,7 +120,7 @@ export class MdnsResponder extends EventEmitter {
     if (!this.#started) return;
     clearTimeout(this.#announceTimer);
     // Goodbye: re-announce all records with TTL 0 (RFC 6762 §10.1).
-    this.#sendRecords(this.#allRecords(0));
+    await this.#sendRecords(this.#allRecords(0));
     this.#started = false;
     await new Promise((resolve) => this.#socket.close(resolve));
     this.#socket = null;
@@ -164,17 +165,43 @@ export class MdnsResponder extends EventEmitter {
   }
 
   #sendRecords(answers, destination = null) {
-    if (answers.length === 0 || !this.#socket) return;
+    if (answers.length === 0 || !this.#socket) return Promise.resolve();
     const msg = encodeMessage({
       flags: FLAG_RESPONSE | FLAG_AUTHORITATIVE,
       answers,
     });
-    const port = destination?.port ?? MDNS_PORT;
-    const addr = destination?.address ?? MDNS_ADDRESS;
-    this.#socket.send(msg, port, addr, (err) => {
-      // Send failures (no multicast route, interface down) are non-fatal:
-      // the responder keeps answering on whatever interfaces do work.
-      if (err) this.emit('warning', err);
+    if (destination) return this.#send(msg, destination.port, destination.address);
+    return this.#sendMulticast(msg);
+  }
+
+  // A socket bound to 0.0.0.0 multicasts on a single OS-chosen interface,
+  // which on multi-homed hosts (Hyper-V/VMware/VPN adapters) is often not the
+  // LAN the sender device is on — so emit once per usable interface.
+  async #sendMulticast(buf) {
+    const addresses = this.#addressList();
+    if (addresses.length === 0) {
+      await this.#send(buf, MDNS_PORT, MDNS_ADDRESS);
+      return;
+    }
+    for (const address of addresses) {
+      if (!this.#socket) return;
+      try {
+        this.#socket.setMulticastInterface(address);
+      } catch {
+        continue; // Interface may have gone away or not support multicast.
+      }
+      await this.#send(buf, MDNS_PORT, MDNS_ADDRESS);
+    }
+  }
+
+  #send(buf, port, addr) {
+    return new Promise((resolve) => {
+      this.#socket.send(buf, port, addr, (err) => {
+        // Send failures (no multicast route, interface down) are non-fatal:
+        // the responder keeps answering on whatever interfaces do work.
+        if (err) this.emit('warning', err);
+        resolve();
+      });
     });
   }
 
@@ -238,10 +265,8 @@ export class MdnsResponder extends EventEmitter {
       additionals: dedupe(additionals),
     };
     const buf = encodeMessage(message2);
-    const dest = unicast ? rinfo : null;
-    this.#socket.send(buf, dest?.port ?? MDNS_PORT, dest?.address ?? MDNS_ADDRESS, (err) => {
-      if (err) this.emit('warning', err);
-    });
+    if (unicast) this.#send(buf, rinfo.port, rinfo.address);
+    else this.#sendMulticast(buf);
     this.emit('query', { questions: message.questions, from: rinfo, unicast });
   }
 }

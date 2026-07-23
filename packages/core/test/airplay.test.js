@@ -15,6 +15,7 @@ test('LAN address filtering excludes loopback, multicast and benchmark adapters'
   assert.equal(isUsableLanIPv4('10.10.0.129'), true);
   assert.equal(isUsableLanIPv4('192.168.1.20'), true);
   assert.equal(isUsableLanIPv4('198.18.0.1'), false);
+  assert.equal(isUsableLanIPv4('169.254.90.36'), false);
   assert.equal(isUsableLanIPv4('127.0.0.1'), false);
   assert.equal(isUsableLanIPv4('224.0.0.251'), false);
   assert.equal(isUsableLanIPv4('not-an-address'), false);
