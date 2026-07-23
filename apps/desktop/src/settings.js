@@ -7,6 +7,8 @@ import { dirname } from 'node:path';
 export const DEFAULT_SETTINGS = Object.freeze({
   name: 'OpenMirror',
   port: 7000,
+  display: null,
+  fullscreen: false,
 });
 
 export function normalizeSettings(raw) {
@@ -19,8 +21,23 @@ export function normalizeSettings(raw) {
     }
     const port = Number(raw.port);
     if (Number.isInteger(port) && port >= 0 && port <= 65535) settings.port = port;
+    if (raw.display !== null && raw.display !== undefined && raw.display !== '') {
+      const display = Number(raw.display);
+      if (Number.isSafeInteger(display)) settings.display = display;
+    }
+    settings.fullscreen = raw.fullscreen === true || raw.fullscreen === 'true';
   }
   return settings;
+}
+
+/** Pick the display the main window should live on (fall back to primary). */
+export function pickDisplay(displays, wantedId) {
+  if (!Array.isArray(displays) || displays.length === 0) return null;
+  if (wantedId !== null && wantedId !== undefined) {
+    const wanted = displays.find((display) => display.id === wantedId);
+    if (wanted) return wanted;
+  }
+  return displays.find((display) => display.primary) ?? displays[0];
 }
 
 export async function loadSettings(file) {

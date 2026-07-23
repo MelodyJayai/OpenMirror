@@ -15,7 +15,7 @@
     }
     h1 { font-size: 16px; margin: 0 0 16px; }
     label { display: block; margin: 12px 0 4px; color: #9aa4ad; }
-    input {
+    input, select {
       width: 100%;
       box-sizing: border-box;
       padding: 7px 9px;
@@ -25,6 +25,14 @@
       color: #e8e8e8;
       font-size: 14px;
     }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      color: #e8e8e8;
+    }
+    .check input { width: auto; }
     .hint { margin-top: 6px; color: #9aa4ad; font-size: 12px; }
     .actions { margin-top: 20px; display: flex; gap: 10px; }
     button {
@@ -45,7 +53,10 @@
   <input id="name" maxlength="63">
   <label for="port">RTSP 控制端口（0 = 随机）</label>
   <input id="port" type="number" min="0" max="65535">
-  <p class="hint">保存后接收器会重启，正在进行的投屏会断开。</p>
+  <label for="display">输出显示器</label>
+  <select id="display"></select>
+  <label class="check"><input id="fullscreen" type="checkbox">在所选显示器上全屏显示</label>
+  <p class="hint">修改名称或端口后接收器会重启，正在进行的投屏会断开；显示器设置立即生效。</p>
   <div class="actions">
     <button id="save">保存并重启</button>
     <button id="close">关闭</button>

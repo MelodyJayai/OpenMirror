@@ -9,10 +9,13 @@ function subscribe(channel) {
 contextBridge.exposeInMainWorld('openmirror', {
   onCodec: subscribe('om:codec'),
   onVideo: subscribe('om:video'),
+  onAudio: subscribe('om:audio'),
+  onVolume: subscribe('om:volume'),
   onReset: subscribe('om:reset'),
   onStatus: subscribe('om:status'),
   onReceiverInfo: subscribe('om:receiver-info'),
   getSettings: () => ipcRenderer.invoke('om:get-settings'),
   getReceiverInfo: () => ipcRenderer.invoke('om:get-receiver-info'),
+  getDisplays: () => ipcRenderer.invoke('om:get-displays'),
   saveSettings: (settings) => ipcRenderer.invoke('om:save-settings', settings),
 });

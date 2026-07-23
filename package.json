@@ -14,7 +14,8 @@
     "test": "node --test",
     "interop:report": "node tools/analyze-interoperability.js",
     "start": "node apps/cli/src/main.js",
-    "start:desktop": "npm run start --workspace @openmirror/desktop"
+    "start:desktop": "npm run start --workspace @openmirror/desktop",
+    "package:desktop": "npm run package --workspace @openmirror/desktop"
   },
   "engines": {
     "node": ">=20"

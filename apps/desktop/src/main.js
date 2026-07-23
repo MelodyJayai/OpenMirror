@@ -1,13 +1,15 @@
 // Electron main process: hosts the AirPlayReceiver, forwards H.264 access
 // units to the renderer for WebCodecs decoding, and provides the tray +
-// settings shell. Audio playback still goes through the CLI's ffplay sinks;
-// the desktop audio path lands with the unified WebAudio media graph.
+// settings shell. Audio is normalized here (ALAC decoded in-process, RAOP L16
+// byte-swapped) and handed to the renderer's WebAudio graph; AAC-ELD access
+// units go through the renderer's WebCodecs AudioDecoder.
 
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen } from 'electron';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { AirPlayReceiver, localIPv4Addresses } from '@openmirror/core';
-import { loadSettings, saveSettings } from './settings.js';
+import { AAC_ELD_CONFIG, alacDecoderFromAnnounce } from '@openmirror/media';
+import { loadSettings, pickDisplay, saveSettings } from './settings.js';
 
 const appDir = dirname(fileURLToPath(import.meta.url));
 const smokeTest = process.env.OPENMIRROR_SMOKE === '1';
@@ -42,14 +44,22 @@ function broadcastReceiverInfo() {
 async function startReceiver() {
   const instance = new AirPlayReceiver({ name: settings.name, port: settings.port });
   receiver = instance;
+  const raopAnnounces = new Map();
+  const alacDecoders = new Map();
   instance.on('error', (error) => broadcastStatus(`接收器错误：${error.message}`));
   instance.on('warning', () => {});
   instance.on('session-opened', (session) => broadcastStatus(`${session.remoteAddress} 已连接`));
   instance.on('session-closed', (session) => {
     broadcastStatus(`${session.remoteAddress} 已断开`);
+    raopAnnounces.delete(session);
+    alacDecoders.delete(session);
     send('om:reset');
   });
-  instance.on('teardown', () => send('om:reset'));
+  instance.on('teardown', ({ session }) => {
+    raopAnnounces.delete(session);
+    alacDecoders.delete(session);
+    send('om:reset');
+  });
   instance.on('flush', () => send('om:reset'));
   instance.on('video-codec', ({ sps, annexB }) => send('om:codec', { sps, annexB }));
   instance.on('video-data', ({ annexB, keyframe, timing }) => send('om:video', {
@@ -57,11 +67,61 @@ async function startReceiver() {
     keyframe,
     presentationTimeMs: timing?.presentationTimeMs ?? null,
   }));
-  instance.on('announce', ({ session, codec, encryption }) => {
+  instance.on('announce', ({ session, codec, encryption, sampleRate, channels, alac }) => {
     broadcastStatus(`${session.remoteAddress} RAOP 音频会话（${codec ?? 'unknown'}，${encryption}）`);
+    raopAnnounces.set(session, { sampleRate, channels, alac });
+    alacDecoders.delete(session);
+  });
+  instance.on('audio-data', (packet) => {
+    if (packet.encrypted) return;
+    const { session, payload, timing } = packet;
+    const presentationTimeMs = timing?.presentationTimeMs ?? null;
+    if (packet.compressionType === 8) {
+      send('om:audio', {
+        kind: 'aac-eld',
+        config: AAC_ELD_CONFIG,
+        sampleRate: packet.sampleRate ?? 44100,
+        channels: 2,
+        data: payload,
+        presentationTimeMs,
+      });
+      return;
+    }
+    const announce = raopAnnounces.get(session);
+    const base = {
+      kind: 'pcm',
+      sampleRate: packet.sampleRate ?? announce?.sampleRate ?? 44100,
+      channels: announce?.channels ?? 2,
+      presentationTimeMs,
+    };
+    if (packet.compressionType === 2) {
+      let alacDecoder = alacDecoders.get(session);
+      if (!alacDecoder) {
+        try {
+          alacDecoder = alacDecoderFromAnnounce(announce);
+        } catch {
+          return;
+        }
+        alacDecoders.set(session, alacDecoder);
+      }
+      try {
+        const { samples } = alacDecoder.decode(payload);
+        send('om:audio', {
+          ...base,
+          pcm: Buffer.from(samples.buffer, samples.byteOffset, samples.length * 2),
+        });
+      } catch {
+        // Corrupt ALAC frames are dropped; the stream resynchronizes itself.
+      }
+      return;
+    }
+    if (packet.compressionType === 1 && payload.length && payload.length % 2 === 0) {
+      send('om:audio', { ...base, pcm: Buffer.from(payload).swap16() });
+    }
   });
   instance.on('volume', ({ volumeDb, muted }) => {
     broadcastStatus(muted ? '发送端已静音' : `发送端音量 ${volumeDb} dB`);
+    send('om:volume', { volumeDb, muted });
   });
   instance.on('stream-error', ({ type, error }) => {
     broadcastStatus(`媒体流错误（${type ?? 'pipeline'}）：${error.message}`);
@@ -125,6 +185,38 @@ function createTray() {
   updateTray();
 }
 
+function listDisplays() {
+  const primaryId = screen.getPrimaryDisplay().id;
+  return screen.getAllDisplays().map((display, index) => ({
+    id: display.id,
+    label: display.label || `显示器 ${index + 1}`,
+    bounds: { ...display.bounds },
+    primary: display.id === primaryId,
+  }));
+}
+
+function applyDisplaySettings(window) {
+  if (!window || window.isDestroyed()) return;
+  const target = pickDisplay(listDisplays(), settings.display);
+  if (target) {
+    const current = screen.getDisplayMatching(window.getBounds());
+    if (current.id !== target.id) {
+      if (window.isFullScreen()) window.setFullScreen(false);
+      const [width, height] = window.getSize();
+      const { bounds } = target;
+      window.setBounds({
+        x: bounds.x + Math.max(0, Math.round((bounds.width - width) / 2)),
+        y: bounds.y + Math.max(0, Math.round((bounds.height - height) / 2)),
+        width: Math.min(width, bounds.width),
+        height: Math.min(height, bounds.height),
+      });
+    }
+  }
+  if (window.isFullScreen() !== settings.fullscreen) {
+    window.setFullScreen(settings.fullscreen);
+  }
+}
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -136,6 +228,7 @@ function createMainWindow() {
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  applyDisplaySettings(mainWindow);
   if (smokeTest) {
     mainWindow.webContents.on('console-message', (event, level, message) => {
       console.log(`[renderer:${level}] ${message}`);
@@ -183,9 +276,14 @@ function openSettingsWindow() {
 
 ipcMain.handle('om:get-settings', () => ({ ...settings }));
 ipcMain.handle('om:get-receiver-info', () => ({ ...receiverInfo }));
+ipcMain.handle('om:get-displays', () => listDisplays());
 ipcMain.handle('om:save-settings', async (event, raw) => {
+  const previous = settings;
   settings = await saveSettings(settingsFile(), raw);
-  await restartReceiver();
+  applyDisplaySettings(mainWindow);
+  if (settings.name !== previous.name || settings.port !== previous.port) {
+    await restartReceiver();
+  }
   return { settings: { ...settings }, receiver: { ...receiverInfo } };
 });
 

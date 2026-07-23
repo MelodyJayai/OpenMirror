@@ -3,18 +3,62 @@
   "version": "0.1.0",
   "description": "OpenMirror desktop receiver (Electron shell with WebCodecs rendering)",
   "license": "GPL-3.0",
+  "author": "OpenMirror contributors",
+  "homepage": "https://github.com/openmirror/openmirror",
   "type": "module",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "package": "electron-builder --publish never",
+    "package:dir": "electron-builder --dir"
   },
   "dependencies": {
-    "@openmirror/core": "*"
+    "@openmirror/core": "*",
+    "@openmirror/media": "*"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
-    "electron": "^43.1.1"
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "org.openmirror.desktop",
+    "electronVersion": "43.1.1",
+    "productName": "OpenMirror",
+    "artifactName": "OpenMirror-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.utilities",
+      "identity": null
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo",
+      "maintainer": "OpenMirror contributors"
+    }
   }
 }
