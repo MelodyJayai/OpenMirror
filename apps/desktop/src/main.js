@@ -5,6 +5,7 @@
 // units go through the renderer's WebCodecs AudioDecoder.
 
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, screen } from 'electron';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { AirPlayReceiver, localIPv4Addresses } from '@openmirror/core';
@@ -23,6 +24,16 @@ let quitting = false;
 let receiverInfo = { name: null, port: null, addresses: [] };
 
 const settingsFile = () => join(app.getPath('userData'), 'settings.json');
+
+let logPath = null;
+function logEvent(kind, detail = {}) {
+  if (!logPath) return;
+  try {
+    appendFileSync(logPath, `${JSON.stringify({ t: new Date().toISOString(), kind, ...detail })}\n`);
+  } catch {
+    // Diagnostics must never break the receiver.
+  }
+}
 
 function send(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -46,33 +57,81 @@ async function startReceiver() {
   receiver = instance;
   const raopAnnounces = new Map();
   const alacDecoders = new Map();
-  instance.on('error', (error) => broadcastStatus(`接收器错误：${error.message}`));
-  instance.on('warning', () => {});
-  instance.on('session-opened', (session) => broadcastStatus(`${session.remoteAddress} 已连接`));
+  const counters = { videoFrame: 0, videoData: 0, audioData: 0 };
+  instance.on('error', (error) => {
+    logEvent('error', { message: error.message });
+    broadcastStatus(`接收器错误：${error.message}`);
+  });
+  instance.on('warning', (error) => logEvent('warning', { message: error.message }));
+  instance.on('session-opened', (session) => {
+    logEvent('session-opened', { remote: session.remoteAddress });
+    broadcastStatus(`${session.remoteAddress} 已连接`);
+  });
   instance.on('session-closed', (session) => {
+    logEvent('session-closed', { remote: session.remoteAddress });
     broadcastStatus(`${session.remoteAddress} 已断开`);
     raopAnnounces.delete(session);
     alacDecoders.delete(session);
     send('om:reset');
   });
+  instance.on('request', ({ method, uri, bodyBytes }) => logEvent('rtsp', { method, uri, bodyBytes }));
+  instance.on('fp-setup', ({ phase, bytes }) => logEvent('fp-setup', { phase, bytes }));
+  instance.on('paired', () => logEvent('paired'));
+  instance.on('setup', ({ payload, crypto }) => logEvent('setup', {
+    crypto,
+    streamTypes: Array.isArray(payload?.streams) ? payload.streams.map((s) => s.type) : [],
+  }));
+  instance.on('record', () => logEvent('record'));
+  instance.on('video-connection', (event) => logEvent('video-connection', { activeConnections: event.activeConnections }));
+  instance.on('video-disconnection', (event) => logEvent('video-disconnection', { activeConnections: event.activeConnections }));
+  instance.on('video-frame', ({ type, payload, encrypted }) => {
+    counters.videoFrame++;
+    if (counters.videoFrame <= 5 || counters.videoFrame % 300 === 0) {
+      logEvent('video-frame', { n: counters.videoFrame, type, bytes: payload?.length ?? 0, encrypted });
+    }
+  });
+  instance.on('media-state', ({ kind, state, reason }) => logEvent('media-state', { kind, state, reason }));
   instance.on('teardown', ({ session }) => {
+    logEvent('teardown');
     raopAnnounces.delete(session);
     alacDecoders.delete(session);
     send('om:reset');
   });
-  instance.on('flush', () => send('om:reset'));
-  instance.on('video-codec', ({ sps, annexB }) => send('om:codec', { sps, annexB }));
-  instance.on('video-data', ({ annexB, keyframe, timing }) => send('om:video', {
-    annexB,
-    keyframe,
-    presentationTimeMs: timing?.presentationTimeMs ?? null,
-  }));
+  instance.on('flush', () => {
+    logEvent('flush');
+    send('om:reset');
+  });
+  instance.on('video-codec', ({ sps, annexB, dimensions }) => {
+    logEvent('video-codec', { dimensions });
+    send('om:codec', { sps, annexB });
+  });
+  instance.on('video-data', ({ annexB, keyframe, timing }) => {
+    counters.videoData++;
+    if (counters.videoData <= 5 || counters.videoData % 300 === 0) {
+      logEvent('video-data', { n: counters.videoData, bytes: annexB?.length ?? 0, keyframe });
+    }
+    send('om:video', {
+      annexB,
+      keyframe,
+      presentationTimeMs: timing?.presentationTimeMs ?? null,
+    });
+  });
   instance.on('announce', ({ session, codec, encryption, sampleRate, channels, alac }) => {
+    logEvent('announce', { codec, encryption, sampleRate, channels });
     broadcastStatus(`${session.remoteAddress} RAOP 音频会话（${codec ?? 'unknown'}，${encryption}）`);
     raopAnnounces.set(session, { sampleRate, channels, alac });
     alacDecoders.delete(session);
   });
   instance.on('audio-data', (packet) => {
+    counters.audioData++;
+    if (counters.audioData <= 5 || counters.audioData % 500 === 0) {
+      logEvent('audio-data', {
+        n: counters.audioData,
+        ct: packet.compressionType,
+        bytes: packet.payload?.length ?? 0,
+        encrypted: packet.encrypted,
+      });
+    }
     if (packet.encrypted) return;
     const { session, payload, timing } = packet;
     const presentationTimeMs = timing?.presentationTimeMs ?? null;
@@ -120,10 +179,12 @@ async function startReceiver() {
     }
   });
   instance.on('volume', ({ volumeDb, muted }) => {
+    logEvent('volume', { volumeDb, muted });
     broadcastStatus(muted ? '发送端已静音' : `发送端音量 ${volumeDb} dB`);
     send('om:volume', { volumeDb, muted });
   });
   instance.on('stream-error', ({ type, error }) => {
+    logEvent('stream-error', { type, message: error?.message });
     broadcastStatus(`媒体流错误（${type ?? 'pipeline'}）：${error.message}`);
   });
   const { port } = await instance.start();
@@ -229,11 +290,10 @@ function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   applyDisplaySettings(mainWindow);
-  if (smokeTest) {
-    mainWindow.webContents.on('console-message', (event, level, message) => {
-      console.log(`[renderer:${level}] ${message}`);
-    });
-  }
+  mainWindow.webContents.on('console-message', (event, level, message) => {
+    if (level >= 2) logEvent('renderer-console', { level, message });
+    if (smokeTest) console.log(`[renderer:${level}] ${message}`);
+  });
   mainWindow.loadFile(join(appDir, 'renderer', 'index.html'));
   mainWindow.on('close', (event) => {
     if (quitting) return;
@@ -295,6 +355,13 @@ if (!singleInstance) {
 
   app.whenReady().then(async () => {
     if (smokeTest) console.log('[smoke] app ready');
+    logPath = join(app.getPath('userData'), 'openmirror.log');
+    try {
+      writeFileSync(logPath, '');
+    } catch {
+      logPath = null;
+    }
+    logEvent('app-start', { version: app.getVersion() });
     settings = await loadSettings(settingsFile());
     createTray();
     createMainWindow();
