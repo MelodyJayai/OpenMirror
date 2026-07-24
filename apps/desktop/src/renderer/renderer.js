@@ -68,16 +68,32 @@ function createVideoDecoder() {
   awaitingKeyframe = true;
 }
 
+function sameBytes(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 function configureDecoder({ sps, annexB }) {
   try {
-    parameterSets = new Uint8Array(annexB);
+    const newParameterSets = new Uint8Array(annexB);
     const spsBytes = new Uint8Array(sps);
     if (spsBytes.length < 4) throw new Error(`SPS 过短（${spsBytes.length} 字节）`);
-    codecString = codecFromSps(spsBytes);
+    const newCodecString = codecFromSps(spsBytes);
     if (typeof VideoDecoder !== 'function') {
       setStatus('此环境不支持 WebCodecs VideoDecoder');
       return;
     }
+    // Senders resend identical SPS/PPS on picture-in-picture and audio
+    // toggles. Rebuilding the decoder there re-enters awaiting-keyframe and
+    // freezes the picture until the next IDR arrives — which may be seconds
+    // away — so only rebuild when the parameters actually change.
+    if (decoder && decoder.state === 'configured'
+      && newCodecString === codecString && sameBytes(newParameterSets, parameterSets)) {
+      return;
+    }
+    parameterSets = newParameterSets;
+    codecString = newCodecString;
     createVideoDecoder();
     console.warn(`video decoder configured as ${codecString}`);
     setStatus(`H.264 ${codecString}`);
