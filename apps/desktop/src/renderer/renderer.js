@@ -114,10 +114,18 @@ let aacFallbackTimestampUs = 0;
 // string first, then whitelisted AAC strings with the same ELD description.
 const AAC_CODEC_CANDIDATES = ['mp4a.40.39', 'mp4a.40.2', 'mp4a.40.5'];
 const failedAacCodecs = new Set();
+// Chromium's FFmpeg audio decoder anchors output timestamps at the first
+// chunk and accumulates decoded frames, ignoring later chunk timestamps.
+// After a stream pause (audio-only teardown while mirroring) the outputs lag
+// the wall clock and the graph would drop everything as late, so the packet
+// presentation times are matched to outputs through a FIFO instead.
+const aacPresentationTimesMs = [];
+let aacDroppedCount = 0;
 
 function closeAacDecoder() {
   if (aacDecoder && aacDecoder.state !== 'closed') aacDecoder.close();
   aacDecoder = null;
+  aacPresentationTimesMs.length = 0;
 }
 
 async function ensureAacDecoder({ config, sampleRate, channels }) {
@@ -145,11 +153,17 @@ async function ensureAacDecoder({ config, sampleRate, channels }) {
           audioData.copyTo(plane, { planeIndex: channel, format: 'f32-planar' });
           planes.push(plane);
         }
-        audioGraph.playPlanar({
+        const result = audioGraph.playPlanar({
           planes,
           sampleRate: audioData.sampleRate,
-          presentationTimeMs: audioData.timestamp / 1000,
+          presentationTimeMs: aacPresentationTimesMs.shift() ?? null,
         });
+        if (result.dropped) {
+          aacDroppedCount++;
+          if (aacDroppedCount === 1 || aacDroppedCount % 250 === 0) {
+            console.warn(`AAC audio dropped (${result.dropped}), total ${aacDroppedCount}`);
+          }
+        }
         audioData.close();
       },
       error: (error) => {
@@ -194,6 +208,7 @@ window.openmirror.onAudio((packet) => {
         timestamp: aacFallbackTimestampUs,
         data: new Uint8Array(packet.data),
       }));
+      aacPresentationTimesMs.push(packet.presentationTimeMs ?? null);
     } catch (error) {
       setStatus(`音频解码错误：${error.message}`);
       closeAacDecoder();
@@ -208,6 +223,10 @@ window.openmirror.onVolume(({ volumeDb, muted }) => {
 window.openmirror.onReset(() => {
   closeDecoder();
   closeAacDecoder();
+  // A fresh session deserves a fresh codec probe; earlier failures may have
+  // been transient (e.g. mid-stream junk), not real capability limits.
+  failedAacCodecs.clear();
+  aacUnsupported = false;
   audioGraph.reset();
   showOverlay();
 });
