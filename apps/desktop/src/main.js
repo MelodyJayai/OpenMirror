@@ -115,7 +115,9 @@ async function startReceiver() {
   });
   instance.on('video-data', ({ annexB, keyframe, timing }) => {
     counters.videoData++;
-    if (counters.videoData <= 5 || counters.videoData % 300 === 0) {
+    // Keyframes are rare (codec changes, refreshes) and mark exactly where the
+    // renderer can (re)start decoding — always log them.
+    if (keyframe || counters.videoData <= 5 || counters.videoData % 300 === 0) {
       logEvent('video-data', { n: counters.videoData, bytes: annexB?.length ?? 0, keyframe });
     }
     send('om:video', {

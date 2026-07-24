@@ -54,28 +54,35 @@ function paint(frame) {
   overlay.classList.add('hidden');
 }
 
+function createVideoDecoder() {
+  closeDecoder();
+  decoder = new VideoDecoder({
+    output: paint,
+    error: (error) => {
+      console.warn(`video decoder error: ${error.message}`);
+      setStatus(`解码错误：${error.message}`);
+      closeDecoder();
+    },
+  });
+  decoder.configure({ codec: codecString, optimizeForLatency: true });
+  awaitingKeyframe = true;
+}
+
 function configureDecoder({ sps, annexB }) {
   try {
     parameterSets = new Uint8Array(annexB);
     const spsBytes = new Uint8Array(sps);
     if (spsBytes.length < 4) throw new Error(`SPS 过短（${spsBytes.length} 字节）`);
     codecString = codecFromSps(spsBytes);
-    closeDecoder();
     if (typeof VideoDecoder !== 'function') {
       setStatus('此环境不支持 WebCodecs VideoDecoder');
       return;
     }
-    decoder = new VideoDecoder({
-      output: paint,
-      error: (error) => {
-        setStatus(`解码错误：${error.message}`);
-        closeDecoder();
-      },
-    });
-    decoder.configure({ codec: codecString, optimizeForLatency: true });
-    awaitingKeyframe = true;
+    createVideoDecoder();
+    console.warn(`video decoder configured as ${codecString}`);
     setStatus(`H.264 ${codecString}`);
   } catch (error) {
+    console.warn(`video decoder configure failed: ${error.message}`);
     setStatus(`视频配置错误：${error.message}`);
     closeDecoder();
   }
@@ -83,9 +90,32 @@ function configureDecoder({ sps, annexB }) {
 
 window.openmirror.onCodec(configureDecoder);
 
+let droppedAwaitingKeyframe = 0;
+let decodedSinceBacklogWarn = 0;
+
 window.openmirror.onVideo(({ annexB, keyframe, presentationTimeMs }) => {
+  // A decoder killed by a mid-stream error can restart on any keyframe with
+  // the cached parameter sets — mirror senders emit IDRs far more often than
+  // codec changes, so this recovers without waiting for the next om:codec.
+  if ((!decoder || decoder.state !== 'configured') && keyframe && codecString) {
+    try {
+      createVideoDecoder();
+      console.warn(`video decoder rebuilt on keyframe as ${codecString}`);
+    } catch (error) {
+      console.warn(`video decoder rebuild failed: ${error.message}`);
+      setStatus(`视频配置错误：${error.message}`);
+      closeDecoder();
+      return;
+    }
+  }
   if (!decoder || decoder.state !== 'configured') return;
-  if (awaitingKeyframe && !keyframe) return;
+  if (awaitingKeyframe && !keyframe) {
+    droppedAwaitingKeyframe++;
+    if (droppedAwaitingKeyframe === 1 || droppedAwaitingKeyframe % 300 === 0) {
+      console.warn(`video dropped awaiting keyframe, total ${droppedAwaitingKeyframe}`);
+    }
+    return;
+  }
   const payload = new Uint8Array(annexB);
   const data = keyframe && parameterSets ? concat(parameterSets, payload) : payload;
   fallbackTimestampUs = presentationTimeMs != null
@@ -98,7 +128,12 @@ window.openmirror.onVideo(({ annexB, keyframe, presentationTimeMs }) => {
       data,
     }));
     awaitingKeyframe = false;
+    if (decoder.decodeQueueSize > 30 && ++decodedSinceBacklogWarn >= 120) {
+      decodedSinceBacklogWarn = 0;
+      console.warn(`video decode queue backlog: ${decoder.decodeQueueSize}`);
+    }
   } catch (error) {
+    console.warn(`video decode failed: ${error.message}`);
     setStatus(`解码错误：${error.message}`);
     closeDecoder();
   }
