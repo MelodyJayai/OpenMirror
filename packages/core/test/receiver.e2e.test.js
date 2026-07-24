@@ -723,10 +723,32 @@ test('AirPlayReceiver decrypts H.264 and AAC-ELD after real PlayFair key unwrap'
     assert.equal(audioPacket.compressionType, 8);
     assert.deepEqual(audioPacket.payload, clearAudio);
 
+    // Tearing down only the audio stream (leaving a video app) keeps the
+    // session and the mirror video flowing.
+    const partialTeardownEvent = new Promise((resolve) => receiver.once('teardown', resolve));
+    const partialTeardown = await client.request(
+      'TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 4',
+      encodeBplist({ streams: [{ type: 96 }] }),
+    );
+    assert.equal(partialTeardown.status, 200);
+    assert.equal(partialTeardown.headers.connection, undefined);
+    const partialInfo = await partialTeardownEvent;
+    assert.equal(partialInfo.partial, true);
+    assert.deepEqual(partialInfo.streamTypes, [96]);
+
+    const continuedVideo = new Promise((resolve) => receiver.once('video-data', resolve));
+    video.write(mirrorFrame(0, videoCipher.update(clearVideo), 5n, 0x10));
+    assert.deepEqual(
+      (await continuedVideo).annexB,
+      Buffer.concat([Buffer.from([0, 0, 0, 1]), clearNal]),
+    );
+
+    const fullTeardownEvent = new Promise((resolve) => receiver.once('teardown', resolve));
     assert.equal(
-      (await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 4')).status,
+      (await client.request('TEARDOWN rtsp://127.0.0.1/stream RTSP/1.0\r\nCSeq: 5')).status,
       200,
     );
+    assert.equal((await fullTeardownEvent).partial, false);
   } finally {
     video?.destroy();
     audio.close();

@@ -91,8 +91,14 @@ async function startReceiver() {
     }
   });
   instance.on('media-state', ({ kind, state, reason }) => logEvent('media-state', { kind, state, reason }));
-  instance.on('teardown', ({ session }) => {
-    logEvent('teardown');
+  instance.on('teardown', ({ session, streamTypes, partial }) => {
+    logEvent('teardown', { streamTypes, partial });
+    if (partial) {
+      // Audio-only stream teardown (leaving a video app) keeps the mirror
+      // alive; only reset the renderer when the video stream itself is gone.
+      if (streamTypes.some((type) => type !== 96)) send('om:reset');
+      return;
+    }
     raopAnnounces.delete(session);
     alacDecoders.delete(session);
     send('om:reset');

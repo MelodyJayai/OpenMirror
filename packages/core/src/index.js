@@ -420,8 +420,41 @@ export class AirPlayReceiver extends EventEmitter {
       return { status: 200 };
     });
     rtsp.handle('TEARDOWN', async (request, ctx) => {
+      // A TEARDOWN whose bplist body names streams removes only those
+      // sub-streams (e.g. iOS drops the type-96 audio stream when leaving a
+      // video app while mirroring continues); only a stream-less TEARDOWN
+      // ends the whole session.
+      let payload = null;
+      try {
+        payload = decodeBplist(request.body);
+      } catch {
+        // Full-session teardowns commonly carry no body at all.
+      }
+      const streams = Array.isArray(payload?.streams) ? payload.streams : [];
+      const streamTypes = streams
+        .map((stream) => stream.type)
+        .filter((type) => Number.isInteger(type));
+      if (streamTypes.length) {
+        const state = ctx.session.state;
+        const media = state.media;
+        for (const type of streamTypes) {
+          if (type === 96) {
+            state.audio = null;
+            if (media) {
+              media.audioSequencer.reset();
+              media.pendingAudio.splice(0);
+              media.clock.resetAudio();
+            }
+          } else {
+            state.videoDecryptor = null;
+            media?.activity.idle('video', 'teardown');
+          }
+        }
+        this.emit('teardown', { session: ctx.session, streamTypes, partial: true });
+        return { status: 200 };
+      }
       await this.#closeMedia(ctx.session, 'teardown');
-      this.emit('teardown', { session: ctx.session });
+      this.emit('teardown', { session: ctx.session, streamTypes: [], partial: false });
       return {
         status: 200,
         headers: { Connection: 'close' },
