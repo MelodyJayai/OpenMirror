@@ -293,3 +293,5 @@ function renderReceiverInfo(info) {
 
 window.openmirror.onReceiverInfo(renderReceiverInfo);
 window.openmirror.getReceiverInfo().then(renderReceiverInfo);
+
+document.addEventListener('dblclick', () => window.openmirror.toggleFullscreen());

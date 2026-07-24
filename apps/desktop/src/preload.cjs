@@ -18,4 +18,5 @@ contextBridge.exposeInMainWorld('openmirror', {
   getReceiverInfo: () => ipcRenderer.invoke('om:get-receiver-info'),
   getDisplays: () => ipcRenderer.invoke('om:get-displays'),
   saveSettings: (settings) => ipcRenderer.invoke('om:save-settings', settings),
+  toggleFullscreen: () => ipcRenderer.invoke('om:toggle-fullscreen'),
 });

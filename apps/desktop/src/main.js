@@ -90,7 +90,15 @@ async function startReceiver() {
       logEvent('video-frame', { n: counters.videoFrame, type, bytes: payload?.length ?? 0, encrypted });
     }
   });
-  instance.on('media-state', ({ kind, state, reason }) => logEvent('media-state', { kind, state, reason }));
+  instance.on('media-state', ({ component, state, reason }) => {
+    logEvent('media-state', { component, state, reason });
+    // iOS pauses the mirror stream entirely while a fullscreen video is paused
+    // ("playing on external display" mode) — surface it so a frozen last frame
+    // reads as sender-side silence rather than a receiver hang.
+    if (component !== 'video') return;
+    if (state === 'idle') broadcastStatus('发送端画面已暂停（无新帧）');
+    else if (reason === 'resumed') broadcastStatus('发送端画面已恢复');
+  });
   instance.on('teardown', ({ session, streamTypes, partial }) => {
     logEvent('teardown', { streamTypes, partial });
     if (partial) {
@@ -300,6 +308,17 @@ function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   applyDisplaySettings(mainWindow);
+  // The menu bar is hidden, so Electron's default F11 accelerator never fires.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.key === 'F11') {
+      event.preventDefault();
+      mainWindow.setFullScreen(!mainWindow.isFullScreen());
+    } else if (input.key === 'Escape' && mainWindow.isFullScreen()) {
+      event.preventDefault();
+      mainWindow.setFullScreen(false);
+    }
+  });
   mainWindow.webContents.on('console-message', (event, level, message) => {
     if (level >= 2) logEvent('renderer-console', { level, message });
     if (smokeTest) console.log(`[renderer:${level}] ${message}`);
@@ -344,6 +363,12 @@ function openSettingsWindow() {
   });
 }
 
+ipcMain.handle('om:toggle-fullscreen', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  const next = !mainWindow.isFullScreen();
+  mainWindow.setFullScreen(next);
+  return next;
+});
 ipcMain.handle('om:get-settings', () => ({ ...settings }));
 ipcMain.handle('om:get-receiver-info', () => ({ ...receiverInfo }));
 ipcMain.handle('om:get-displays', () => listDisplays());
